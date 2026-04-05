@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+if command -v python >/dev/null 2>&1; then
+  PYTHON_BIN="$(command -v python)"
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN="$(command -v python3)"
+else
+  echo "No Python interpreter found for pre-push hook." >&2
+  exit 1
+fi
+
+exec "$PYTHON_BIN" "$ROOT/scripts/run-pre-push-checks.py"

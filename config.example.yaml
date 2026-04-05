@@ -1,0 +1,44 @@
+user:
+  name: "Your Full Name"
+  personal_email: "you@gmail.com"
+  career_email: "you@careermail.com"  # optional, must be set up in Gmail "Send mail as"
+
+gmail:
+  # Simple label:
+  #   query: "label:MyLabel"
+  # Label with spaces ("Job Search"):
+  #   query: "label:Job-Search"
+  # Sub-label ("Job Search/Applications"):
+  #   query: "label:Job-Search-Applications"
+  # To find the exact string: search by label in Gmail, copy the query it generates.
+  # You can also mix with filters: "label:Job-Search -unsubscribe"
+  query: "label:JobSearch"
+  lookback_days: 60
+  processing_labels:
+    root: "application-tracker"
+    stages:
+      processed: "processed"
+
+google_sheets:
+  spreadsheet_id: "YOUR_SPREADSHEET_ID_HERE"
+  sheet_name: "Applications"
+
+gemini:
+  api_key: "AIza..."
+  models:
+    - "gemini-3.1-flash-lite-preview"
+    - "gemini-3-flash-preview"
+    - "gemini-2.5-flash"
+    - "gemini-2.5-flash-lite"
+  grouping_batch_size: 25
+  rate_limit_max_wait_seconds: 60
+  rate_limit_max_retries_per_batch: 2
+
+thresholds:
+  follow_up_days: 7
+  withdraw_days: 14
+  follow_up_repeat_days: 7
+
+templates:
+  follow_up:  "templates/follow_up.txt"
+  withdrawal: "templates/withdrawal.txt"

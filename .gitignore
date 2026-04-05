@@ -1,0 +1,25 @@
+# Credentials & secrets
+credentials/
+config.yaml
+
+# Runtime state
+pending_actions.json
+logs/
+state/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
