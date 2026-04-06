@@ -5649,6 +5649,8 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
                 new_st = extracted_status
                 if new_st and STATUS_RANK.get(new_st, 0) > STATUS_RANK.get(base.get("status", "Applied"), 0):
                     base["status"] = new_st
+                if extracted_status == "Rejected":
+                    base["deferred_until"] = ""
                 extracted_role_title = str(ex.get("role", "") or "").strip()
                 preferred_role_title = choose_preferred_role_title(
                     str(base.get("role", "") or "").strip(),
