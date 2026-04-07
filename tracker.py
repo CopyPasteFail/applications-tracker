@@ -141,6 +141,10 @@ SHEETS_INITIAL_RETRY_DELAY_SECONDS = 2.0
 DEFAULT_AI_GROUPING_BATCH_SIZE = 25
 DEFAULT_AI_RATE_LIMIT_MAX_WAIT_SECONDS = 60
 DEFAULT_AI_RATE_LIMIT_MAX_RETRIES_PER_BATCH = 2
+FREE_TIER_GOOGLE_SEARCH_GROUNDED_MODEL_NAMES = (
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+)
 GMAIL_BATCH_MODIFY_MESSAGE_LIMIT = 1000
 APPLICATION_ROLELESS_MERGE_WINDOW_DAYS = 60
 ROLE_BACKFILL_LOOKBACK_DAYS = 365
@@ -157,6 +161,97 @@ console = Console()
 
 class TrackerError(Exception):
     """Raised when the tracker hits a user-facing operational error."""
+
+
+def _persist_google_token(credentials: GoogleAuthCredentials) -> None:
+    """
+    Persist Google OAuth credentials to the local token file.
+
+    Inputs:
+    - credentials: The OAuth credentials object to serialize to `TOKEN_PATH`.
+
+    Outputs:
+    - None. Writes the serialized credentials to disk.
+
+    Edge cases:
+    - Raises `TrackerError` when the token directory cannot be created or the
+      token file cannot be written.
+
+    Atomicity / concurrency:
+    - Performs one local write per call. It does not coordinate across
+      processes, so concurrent writers may overwrite each other.
+    """
+    try:
+        TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        TOKEN_PATH.write_text(credentials.to_json(), encoding="utf-8")
+    except OSError as error:
+        raise TrackerError(f"Could not write Google token to {TOKEN_PATH}: {error}") from error
+
+
+def _run_google_oauth_flow() -> GoogleAuthCredentials:
+    """
+    Start the browser-based Google OAuth flow and return fresh credentials.
+
+    Inputs:
+    - None. Uses `CREDS_PATH` and the configured OAuth scopes from disk.
+
+    Outputs:
+    - A newly authorized Google OAuth credentials object.
+
+    Edge cases:
+    - Raises `TrackerError` when the client credentials file is missing or when
+      the OAuth browser flow fails.
+
+    Atomicity / concurrency:
+    - Performs one interactive OAuth flow for the current process. It does not
+      provide any cross-process locking.
+    """
+    if not CREDS_PATH.exists():
+        raise TrackerError(f"Google credentials not found at {CREDS_PATH}")
+
+    try:
+        flow = InstalledAppFlowLoader.from_client_secrets_file(str(CREDS_PATH), SCOPES)
+        # WSL: if browser doesn't open, set open_browser=False and paste URL manually
+        return flow.run_local_server(port=0, open_browser=True)
+    except Exception as error:
+        raise TrackerError(f"Google OAuth flow failed using {CREDS_PATH}: {error}") from error
+
+
+def _refresh_or_reauthorize_google_credentials(
+    credentials: GoogleAuthCredentials,
+    token_path_for_errors: Path = TOKEN_PATH,
+) -> GoogleAuthCredentials:
+    """
+    Refresh Google OAuth credentials and fall back to reauthorization when needed.
+
+    Inputs:
+    - credentials: The previously stored Google OAuth credentials loaded from
+      disk.
+    - token_path_for_errors: Token path used only to provide precise error
+      context in exception messages.
+
+    Outputs:
+    - A valid Google OAuth credentials object, either refreshed in place or
+      recreated through a new OAuth browser flow.
+
+    Edge cases:
+    - When refresh fails with `invalid_grant`, this function assumes the refresh
+      token was revoked or expired and runs a fresh OAuth flow.
+    - Other refresh failures raise `TrackerError` with explicit context.
+
+    Atomicity / concurrency:
+    - Performs at most one refresh attempt followed by at most one interactive
+      OAuth flow in the current process.
+    """
+    try:
+        credentials.refresh(Request())
+        return credentials
+    except Exception as error:
+        error_message = str(error)
+        if "invalid_grant" not in error_message:
+            raise TrackerError(f"Could not refresh Google token at {token_path_for_errors}: {error}") from error
+
+    return _run_google_oauth_flow()
 
 
 class GeminiRateLimitError(TrackerError):
@@ -1319,10 +1414,13 @@ def choose_best_contact_email_for_action(
     ]
     if not usable_candidates:
         return ""
-    return max(
+    best_candidate_email = max(
         usable_candidates,
         key=lambda candidate_email: score_contact_email_for_action(candidate_email, action_type),
     )
+    if score_contact_email_for_action(best_candidate_email, action_type) < 0:
+        return ""
+    return best_candidate_email
 
 
 def resolve_message_sender_email(message_record: GmailMessage) -> str:
@@ -2330,10 +2428,18 @@ def has_strong_application_signal(email_message: GmailMessage) -> bool:
         r"\bcoding challenge\b",
         r"\btake[- ]?home\b",
         r"\bnot moving forward\b",
+        r"\bwill not be moving forward\b",
         r"\bother candidates\b",
+        r"\bno longer under consideration\b",
+        r"\bdecided to move forward with other candidates\b",
+        r"\bdecided to pursue other candidates\b",
+        r"\bwe regret to inform you\b",
         r"\bposition has been filled\b",
+        r"\bclosed the position\b",
+        r"\bclosed the role\b",
         r"\boffer letter\b",
         r"\bexcited to offer you\b",
+        r"\boffer has been extended\b",
     )
     return any(
         re.search(pattern, normalized_message_text, flags=re.IGNORECASE | re.DOTALL)
@@ -2452,11 +2558,18 @@ def build_related_gmail_search_terms(application_row: ApplicationRecord) -> list
     if company_name and not is_low_confidence_company_name(company_name):
         search_terms.append(f"\"{company_name}\"")
 
-    sender_addresses = deduplicate_preserving_order([
-        extract_email_address(str(application_row.get(field_name, "") or ""))
-        for field_name in ("recruiter_email", "ats_email", "contact_email")
-        if extract_email_address(str(application_row.get(field_name, "") or ""))
-    ])
+    sender_addresses: list[str] = []
+    for field_name in ("recruiter_email", "ats_email", "contact_email"):
+        sender_address = extract_email_address(str(application_row.get(field_name, "") or ""))
+        if not sender_address:
+            continue
+        if (
+            field_name != "ats_email"
+            and score_contact_email_for_action(sender_address, "follow_up") < 0
+        ):
+            continue
+        sender_addresses.append(sender_address)
+    sender_addresses = deduplicate_preserving_order(sender_addresses)
     for sender_address in sender_addresses:
         if is_generic_ats_sender_address(sender_address):
             continue
@@ -2508,6 +2621,41 @@ def has_only_calendar_message_ids(application_row: ApplicationRecord) -> bool:
         and normalized_internet_message_id.endswith("@google.com>")
         for normalized_internet_message_id in normalized_internet_message_ids
     )
+
+
+def find_existing_application_id_by_thread_id(
+    existing_apps_by_id: dict[str, ApplicationRecord],
+    message_thread_id: str,
+) -> str:
+    """
+    Find the existing application row that already owns a Gmail thread.
+
+    Inputs:
+    - existing_apps_by_id: Existing application rows keyed by `appl_id`.
+    - message_thread_id: Gmail internal thread ID from an inbound message.
+
+    Outputs:
+    - Matching `appl_id`, or an empty string when no stored row contains the thread.
+
+    Edge cases:
+    - Blank thread IDs and malformed stored JSON return no match.
+
+    Atomicity / concurrency:
+    - Pure helper with no shared mutable state.
+    """
+    normalized_message_thread_id = str(message_thread_id or "").strip()
+    if not normalized_message_thread_id:
+        return ""
+
+    for existing_appl_id, existing_app in existing_apps_by_id.items():
+        stored_thread_ids = cast(list[str], safe_json_loads(
+            existing_app.get("thread_ids") or "[]",
+            f"thread_ids for appl_id {existing_appl_id}",
+            [],
+        ))
+        if normalized_message_thread_id in stored_thread_ids:
+            return existing_appl_id
+    return ""
 
 
 def merge_application_records(
@@ -2581,6 +2729,11 @@ def merge_application_records(
         ]
         if candidate_dates:
             merged_app[field_name] = max(candidate_dates)
+
+    if is_truthy_sheet_value(primary_app.get("withdraw_in_next_digest")) or is_truthy_sheet_value(
+        secondary_app.get("withdraw_in_next_digest")
+    ):
+        merged_app["withdraw_in_next_digest"] = "TRUE"
 
     primary_notes = str(primary_app.get("notes", "") or "").strip()
     secondary_notes = str(secondary_app.get("notes", "") or "").strip()
@@ -3205,24 +3358,10 @@ class GmailClient:
                 raise TrackerError(f"Could not load Google token from {TOKEN_PATH}: {error}") from error
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
-                try:
-                    creds.refresh(Request())
-                except Exception as error:
-                    raise TrackerError(f"Could not refresh Google token at {TOKEN_PATH}: {error}") from error
+                creds = _refresh_or_reauthorize_google_credentials(creds, token_path_for_errors=TOKEN_PATH)
             else:
-                if not CREDS_PATH.exists():
-                    raise TrackerError(f"Google credentials not found at {CREDS_PATH}")
-                try:
-                    flow = InstalledAppFlowLoader.from_client_secrets_file(str(CREDS_PATH), SCOPES)
-                    # WSL: if browser doesn't open, set open_browser=False and paste URL manually
-                    creds = flow.run_local_server(port=0, open_browser=True)
-                except Exception as error:
-                    raise TrackerError(f"Google OAuth flow failed using {CREDS_PATH}: {error}") from error
-            try:
-                TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-                TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
-            except OSError as error:
-                raise TrackerError(f"Could not write Google token to {TOKEN_PATH}: {error}") from error
+                creds = _run_google_oauth_flow()
+            _persist_google_token(creds)
         return creds
 
     def get_emails(
@@ -4046,8 +4185,9 @@ COLUMNS = [
     "applied_date", "last_activity_date",
     "recruiter_name", "recruiter_email", "ats_email", "contact_email",
     "follow_up_sent_date", "follow_up_count", "withdrawal_sent_date", "deletion_request_sent_date",
-    "deletion_request_opt_out",
+    "follow_up_opt_out", "deletion_request_opt_out",
     "follow_up_missing_email_policy", "withdraw_missing_email_policy", "deletion_request_missing_email_policy",
+    "withdraw_in_next_digest",
     "deferred_until",
     "notes", "linkedin_contact", "email_ids", "thread_ids", "internet_message_ids",
     "gmail_review_url", "draft_id",
@@ -4061,10 +4201,8 @@ class SheetsClient:
             raise TrackerError(f"Could not load Sheets credentials from {TOKEN_PATH}: {error}") from error
 
         if creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-            except Exception as error:
-                raise TrackerError(f"Could not refresh Sheets credentials from {TOKEN_PATH}: {error}") from error
+            creds = _refresh_or_reauthorize_google_credentials(creds, token_path_for_errors=TOKEN_PATH)
+            _persist_google_token(creds)
 
         gc = gspread.authorize(creds)
         try:
@@ -4710,6 +4848,36 @@ class AIGrouper:
     - Stateless across requests except for immutable configuration and the shared API client.
     """
 
+    def _build_free_tier_grounded_model_names(
+        self,
+        configured_model_names: list[str],
+    ) -> list[str]:
+        """
+        Filter configured Gemini models down to those that support Google Search grounding on
+        the free tier.
+
+        Inputs:
+        - configured_model_names: Deduplicated Gemini model names from config priority order.
+
+        Outputs:
+        - Ordered subset of model names that are safe to use for free-tier grounded search.
+
+        Edge cases:
+        - Unknown, preview, or paid-only grounded-search models are excluded.
+        - Returns an empty list when the config contains no free-tier grounded-search-safe
+          models, allowing callers to raise a clear configuration error before attempting a
+          grounded request.
+
+        Atomicity / concurrency:
+        - Pure helper with no side effects.
+        """
+        free_tier_grounded_model_names: list[str] = []
+        allowed_model_names = set(FREE_TIER_GOOGLE_SEARCH_GROUNDED_MODEL_NAMES)
+        for configured_model_name in configured_model_names:
+            if configured_model_name in allowed_model_names:
+                free_tier_grounded_model_names.append(configured_model_name)
+        return free_tier_grounded_model_names
+
     def __init__(self, config: ConfigDict):
         self._config = config
         try:
@@ -4733,6 +4901,9 @@ class AIGrouper:
         )
         if not self.model_names:
             raise TrackerError("config.yaml must define at least one Gemini model")
+        self.free_tier_grounded_model_names = self._build_free_tier_grounded_model_names(
+            self.model_names
+        )
         self.client = genai.Client(api_key=api_key)
         self.json_generation_config = types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -4851,6 +5022,7 @@ class AIGrouper:
         self,
         prompt: str,
         generation_config: types.GenerateContentConfig,
+        model_names: Optional[list[str]] = None,
     ) -> Any:
         """
         Send a prompt to Gemini, trying configured models in priority order.
@@ -4858,6 +5030,8 @@ class AIGrouper:
         Inputs:
         - prompt: Prompt text to send to Gemini.
         - generation_config: Gemini generation settings for this request.
+        - model_names: Optional explicit model priority list. When omitted, uses the full
+          configured model list.
 
         Outputs:
         - Raw Gemini SDK response from the first successful model.
@@ -4870,8 +5044,11 @@ class AIGrouper:
         - Performs one outbound Gemini request at a time with no shared mutable state beyond the client.
         """
         last_rate_limit_error: Optional[GeminiRateLimitError] = None
+        candidate_model_names = model_names or self.model_names
+        if not candidate_model_names:
+            raise TrackerError("No Gemini models are available for this request")
 
-        for model_index, model_name in enumerate(self.model_names):
+        for model_index, model_name in enumerate(candidate_model_names):
             try:
                 models_client = cast(Any, self.client.models)
                 resp = models_client.generate_content(
@@ -4888,10 +5065,10 @@ class AIGrouper:
                         retry_delay_seconds=self._parse_retry_delay_seconds(error_text),
                         is_daily_quota_exhausted=self._is_daily_quota_exhausted(error_text),
                     )
-                    if model_index < len(self.model_names) - 1:
+                    if model_index < len(candidate_model_names) - 1:
                         console.print(
                             f"[yellow]  Gemini model {model_name} is unavailable due to quota or rate limits. "
-                            f"Trying {self.model_names[model_index + 1]}.[/yellow]"
+                            f"Trying {candidate_model_names[model_index + 1]}.[/yellow]"
                         )
                         continue
                     raise last_rate_limit_error from error
@@ -5033,6 +5210,13 @@ class AIGrouper:
             'Return exactly one JSON object with keys "email", "source_url", "source_domain", "source_title", and "notes".',
             'If nothing reliable is found, return {"email":"","source_url":"","source_domain":"","source_title":"","notes":""}.',
         ])
+        if not self.free_tier_grounded_model_names:
+            supported_model_names = ", ".join(FREE_TIER_GOOGLE_SEARCH_GROUNDED_MODEL_NAMES)
+            raise TrackerError(
+                "config.yaml gemini.models must include at least one model that supports "
+                "Google Search grounding on the free tier for web contact discovery. "
+                f"Supported models: {supported_model_names}."
+            )
 
         response = self._generate_content(
             prompt,
@@ -5040,6 +5224,7 @@ class AIGrouper:
                 tools=[types.Tool(google_search=types.GoogleSearch())],
                 temperature=0.1,
             ),
+            model_names=self.free_tier_grounded_model_names,
         )
         response_text = getattr(response, "text", "") or ""
         parsed_result = extract_first_json_object(response_text) or {}
@@ -5452,6 +5637,7 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
                 continue
 
             message_record = email_map[email_id]
+            message_thread_id = str(message_record.get("thread_id", "") or "").strip()
             reply_to_email_address = resolve_message_reply_to_email(message_record)
             raw_sender_email_address = resolve_message_sender_email(message_record)
             raw_sender_email_domain = extract_email_domain(raw_sender_email_address)
@@ -5483,6 +5669,24 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
                 or raw_sender_company_hint.title()
                 or ""
             )
+            existing_thread_match_appl_id = find_existing_application_id_by_thread_id(
+                existing_apps_by_id,
+                message_thread_id,
+            )
+            if action == "ignore" and existing_thread_match_appl_id:
+                action = "match_existing"
+                r["appl_id"] = existing_thread_match_appl_id
+                extracted_payload = cast(JsonObject, r.setdefault("extracted", {}))
+                existing_thread_match = existing_apps_by_id.get(existing_thread_match_appl_id, {})
+                if not str(extracted_payload.get("company", "") or "").strip():
+                    extracted_payload["company"] = (
+                        deterministic_company_name
+                        or str(existing_thread_match.get("company", "") or "").strip()
+                    )
+                if not str(extracted_payload.get("role", "") or "").strip() and deterministic_role_title:
+                    extracted_payload["role"] = deterministic_role_title
+                if not str(extracted_payload.get("status", "") or "").strip() and deterministic_status:
+                    extracted_payload["status"] = deterministic_status
             should_rescue_ignored_email = (
                 action == "ignore"
                 and is_ats_sender_domain(raw_sender_email_domain)
@@ -5545,7 +5749,6 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
                 and not sender_is_user_owned
                 and not is_unusable_outbound_email(sender_email_address)
             )
-            message_thread_id = str(message_record.get("thread_id", "") or "").strip()
             internet_message_id = str(
                 message_record.get("internet_message_id", "") or ""
             ).strip()
@@ -5601,6 +5804,9 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
 
             strongest_match_score = 0
             strongest_match_appl_id: Optional[str] = None
+            if existing_thread_match_appl_id:
+                strongest_match_appl_id = existing_thread_match_appl_id
+                strongest_match_score = max(STATUS_RANK.values(), default=0) + 1
             for existing_appl_id, existing_app in existing_apps_by_id.items():
                 merge_strength = get_application_merge_strength(existing_app, extracted_application)
                 if merge_strength > strongest_match_score:
@@ -5651,7 +5857,7 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
                     base["status"] = new_st
                 if extracted_status == "Rejected":
                     base["deferred_until"] = ""
-                extracted_role_title = str(ex.get("role", "") or "").strip()
+                extracted_role_title = extracted_role_name
                 preferred_role_title = choose_preferred_role_title(
                     str(base.get("role", "") or "").strip(),
                     extracted_role_title,
@@ -5744,7 +5950,7 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
                     if internet_message_id and internet_message_id not in internet_message_ids:
                         internet_message_ids.append(internet_message_id)
                     existing_new["internet_message_ids"] = json.dumps(internet_message_ids)
-                    extracted_role_title = str(ex.get("role", "") or "").strip()
+                    extracted_role_title = extracted_role_name
                     preferred_role_title = choose_preferred_role_title(
                         str(existing_new.get("role", "") or "").strip(),
                         extracted_role_title,
@@ -5802,8 +6008,8 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
 
                     updates[aid] = {
                         "appl_id":               aid,
-                        "company":              ex.get("company", "Unknown"),
-                        "role":                 ex.get("role", "Unknown"),
+                        "company":              extracted_company_name or "Unknown",
+                        "role":                 extracted_role_name or "Unknown",
                         "status":               extracted_status,
                         "source":               "email",
                         "applied_date":         extracted_applied_date,
@@ -5815,6 +6021,8 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
                         "follow_up_sent_date":  "",
                         "follow_up_count":      "0",
                         "withdrawal_sent_date": "",
+                        "follow_up_opt_out":    "",
+                        "withdraw_in_next_digest": "",
                         "notes":                "",
                         "linkedin_contact":     "",
                         "email_ids":            json.dumps([eid]),
@@ -6032,6 +6240,22 @@ class FollowUpEngine:
 
         for app in applications:
             status = app.get("status", "Applied")
+            manual_withdraw_requested = is_truthy_sheet_value(app.get("withdraw_in_next_digest"))
+
+            if status in ("Offer", "Withdrawn", "Paused"):
+                continue
+
+            withdrawal_already_sent = bool(app.get("withdrawal_sent_date"))
+            if withdrawal_already_sent:
+                continue
+
+            if manual_withdraw_requested:
+                actions.append({
+                    "type": "withdraw",
+                    "app": dict(app),
+                    "reason": "Manual withdrawal requested for next digest",
+                })
+                continue
 
             # Skip deferred entries
             deferred = app.get("deferred_until", "").strip()
@@ -6050,12 +6274,9 @@ class FollowUpEngine:
             days = (today - ref_date).days
             app["_days"] = days  # attach for email generation
 
+            follow_up_opted_out = is_truthy_sheet_value(app.get("follow_up_opt_out"))
             deletion_request_already_sent = bool(app.get("deletion_request_sent_date"))
             deletion_request_opted_out = is_truthy_sheet_value(app.get("deletion_request_opt_out"))
-            withdrawal_already_sent = bool(app.get("withdrawal_sent_date"))
-
-            if status in ("Offer", "Withdrawn", "Paused"):
-                continue
 
             if status == "Rejected":
                 if deletion_request_already_sent or deletion_request_opted_out:
@@ -6068,9 +6289,6 @@ class FollowUpEngine:
                     })
                 continue
 
-            if withdrawal_already_sent:
-                continue
-
             # Withdraw threshold — don't auto-withdraw if actively in Interview/Assessment
             if days >= self.withdraw_days and status not in ("Interview", "Assessment"):
                 actions.append({
@@ -6081,7 +6299,7 @@ class FollowUpEngine:
                 continue
 
             # Follow-up threshold
-            if days >= self.follow_up_days:
+            if days >= self.follow_up_days and not follow_up_opted_out:
                 # Don't re-follow-up if we already sent one recently
                 last_fu = app.get("follow_up_sent_date")
                 if last_fu:
@@ -6102,6 +6320,27 @@ class FollowUpEngine:
 # ── Tracker Orchestrator ───────────────────────────────────────────────────────
 
 class Tracker:
+    MANAGE_ACTION_ALIASES = {
+        "d": "defer",
+        "defer": "defer",
+        "p": "pause",
+        "pause": "pause",
+        "r": "resume",
+        "resume": "resume",
+        "e": "email",
+        "email": "email",
+        "o": "policy",
+        "policy": "policy",
+        "policies": "policy",
+        "optout": "policy",
+        "opt-out": "policy",
+        "w": "withdraw",
+        "withdraw": "withdraw",
+        "c": "exit",
+        "cancel": "exit",
+        "exit": "exit",
+    }
+
     def __init__(self):
         self.cfg    = load_config()
         self.processing_labels = GmailProcessingLabelConfig.from_config(self.cfg)
@@ -6127,6 +6366,64 @@ class Tracker:
         if normalized_policy in allowed_policies:
             return normalized_policy
         return ""
+
+    @classmethod
+    def _describe_missing_email_policy(cls, raw_policy: object) -> str:
+        normalized_policy = cls._normalize_missing_email_policy(raw_policy)
+        policy_labels = {
+            "": "Ask every time",
+            "skip_always": "Opt out",
+            "create_empty_draft": "Create empty draft",
+        }
+        return policy_labels.get(normalized_policy, "Ask every time")
+
+    @staticmethod
+    def _describe_action_opt_out(raw_value: object) -> str:
+        return "Disabled" if is_truthy_sheet_value(raw_value) else "Enabled"
+
+    def _manage_action_opt_outs(self, app: ApplicationRecord) -> None:
+        opt_out_targets = {
+            "f": ("follow_up_opt_out", "Follow-up"),
+            "d": ("deletion_request_opt_out", "Deletion request"),
+        }
+
+        console.print("  Action opt-outs:")
+        for shortcut, (field_name, label) in opt_out_targets.items():
+            current_status = self._describe_action_opt_out(app.get(field_name, ""))
+            console.print(f"  [cyan]{label} ({shortcut})[/cyan] — current: [green]{current_status}[/green]")
+        selected_target = Prompt.ask(
+            "  Choose action to edit",
+            choices=[*opt_out_targets.keys(), "c"],
+            default="c",
+        ).strip().lower()
+        if selected_target == "c":
+            console.print("  [dim]Cancelled.[/dim]")
+            return
+
+        field_name, label = opt_out_targets[selected_target]
+        current_status = self._describe_action_opt_out(app.get(field_name, ""))
+        console.print(
+            f"  {label}: current behavior is [green]{current_status}[/green]"
+        )
+        console.print(
+            f"  Set {label.lower()} drafting for this row: [cyan]enabled (e)[/cyan], "
+            "[cyan]disabled (a)[/cyan], "
+            "or [cyan]cancel (c)[/cyan]"
+        )
+        selected_policy = Prompt.ask(
+            "  New behavior",
+            choices=["e", "a", "c"],
+            default="c",
+        ).strip().lower()
+        if selected_policy == "c":
+            console.print("  [dim]Cancelled.[/dim]")
+            return
+
+        opt_out_value = "" if selected_policy == "e" else "yes"
+        status_label = self._describe_action_opt_out(opt_out_value)
+        self.sheets.set_field(app["appl_id"], field_name, opt_out_value)
+        app[field_name] = opt_out_value
+        console.print(f"  [green]✓ {label} set to {status_label}[/green]")
 
     def _user_owned_email_addresses(self) -> set[str]:
         user_config = self.cfg.get("user", {})
@@ -6889,8 +7186,6 @@ class Tracker:
                 return existing_email
             if choice == "m":
                 confirmed_email = self._confirm_email_value("")
-                self.sheets.set_field(app["appl_id"], "contact_email", confirmed_email)
-                app["contact_email"] = confirmed_email
                 return confirmed_email
             if choice == "s":
                 return ""
@@ -6900,10 +7195,13 @@ class Tracker:
         self,
         app: ApplicationRecord,
         resolved_email: str,
+        action_type: str,
     ) -> None:
         """
         Persist a resolved outbound contact email back into the application row.
         """
+        if action_type != "follow_up":
+            return
         normalized_resolved_email = extract_email_address(resolved_email) or str(resolved_email or "").strip().lower()
         if not normalized_resolved_email:
             return
@@ -6977,19 +7275,21 @@ class Tracker:
 
             if "@" in choice:
                 confirmed_email = self._confirm_email_value(choice)
-                self.sheets.set_field(app["appl_id"], "contact_email", confirmed_email)
+                if action_type == "follow_up":
+                    self.sheets.set_field(app["appl_id"], "contact_email", confirmed_email)
+                    app["contact_email"] = confirmed_email
                 if policy_field:
                     self.sheets.set_field(app["appl_id"], policy_field, "")
-                app["contact_email"] = confirmed_email
                 app["recruiter_email"] = app.get("recruiter_email", "")
                 return confirmed_email, False, False
 
             if normalized_choice == "":
                 confirmed_email = self._confirm_email_value("")
-                self.sheets.set_field(app["appl_id"], "contact_email", confirmed_email)
+                if action_type == "follow_up":
+                    self.sheets.set_field(app["appl_id"], "contact_email", confirmed_email)
+                    app["contact_email"] = confirmed_email
                 if policy_field:
                     self.sheets.set_field(app["appl_id"], policy_field, "")
-                app["contact_email"] = confirmed_email
                 app["recruiter_email"] = app.get("recruiter_email", "")
                 return confirmed_email, False, False
 
@@ -7045,7 +7345,11 @@ class Tracker:
             log_progress=False,
         )
         if refreshed_target_email and not is_unusable_outbound_email(refreshed_target_email):
-            self._persist_resolved_contact_email(current_application, refreshed_target_email)
+            self._persist_resolved_contact_email(
+                current_application,
+                refreshed_target_email,
+                action_type=action_type,
+            )
             return refreshed_target_email, ""
 
         return "", "no usable recipient found after revalidation"
@@ -8760,7 +9064,7 @@ class Tracker:
             if not contact:
                 contact = self._resolve_company_contact_email(app, atype, log_progress=True)
             if contact:
-                self._persist_resolved_contact_email(app, contact)
+                self._persist_resolved_contact_email(app, contact, action_type=atype)
             should_create_manual_draft = False
 
             if atype in ("withdraw", "deletion_request"):
@@ -8928,6 +9232,7 @@ class Tracker:
                 elif a["type"] == "withdraw":
                     self.sheets.set_field(a["appl_id"], "withdrawal_sent_date", today)
                     self.sheets.set_field(a["appl_id"], "deletion_request_sent_date", today)
+                    self.sheets.set_field(a["appl_id"], "withdraw_in_next_digest", "")
                     self.sheets.set_field(a["appl_id"], "status", "Withdrawn")
                 elif a["type"] == "deletion_request":
                     self.sheets.set_field(a["appl_id"], "deletion_request_sent_date", today)
@@ -8986,7 +9291,7 @@ class Tracker:
             )
         console.print(tbl)
 
-        raw = Prompt.ask("  Enter # to manage (or blank to cancel)").strip()
+        raw = Prompt.ask("  Enter # to manage (or blank to exit)").strip()
         if not raw:
             return
         try:
@@ -9002,11 +9307,19 @@ class Tracker:
         )
 
         # Action menu
-        action = Prompt.ask(
-            "  Action",
-            choices=["defer", "pause", "resume", "email", "cancel"],
-            default="cancel",
+        console.print(
+            "  Actions: [cyan]defer (d)[/cyan], [cyan]pause (p)[/cyan], "
+            "[cyan]resume (r)[/cyan], [cyan]email (e)[/cyan], "
+            "[cyan]action opt-outs (o)[/cyan], "
+            "[cyan]withdraw (w)[/cyan], [cyan]exit (c)[/cyan]"
         )
+        action = self._normalize_manage_action(Prompt.ask("  Action", default="c"))
+        if action is None:
+            console.print(
+                "[red]Invalid action. Use defer/pause/resume/email/policy/withdraw/exit "
+                "or d/p/r/e/o/w/c.[/red]"
+            )
+            return
 
         if action == "defer":
             console.print("  Examples: [dim]7d  |  2w  |  2026-05-01[/dim]")
@@ -9038,8 +9351,20 @@ class Tracker:
             self.sheets.set_field(app["appl_id"], "contact_email", new_email)
             console.print(f"  [green]✓ Contact email set to {new_email}[/green]")
 
+        elif action == "policy":
+            self._manage_action_opt_outs(app)
+
+        elif action == "withdraw":
+            self.sheets.set_field(app["appl_id"], "withdraw_in_next_digest", "TRUE")
+            self.sheets.set_field(app["appl_id"], "deferred_until", "")
+            console.print("  [green]✓ Withdrawal queued for the next digest[/green]")
+
         else:
             console.print("  [dim]Cancelled.[/dim]")
+
+    @classmethod
+    def _normalize_manage_action(cls, raw: str) -> Optional[str]:
+        return cls.MANAGE_ACTION_ALIASES.get(str(raw).strip().lower())
 
     @staticmethod
     def _parse_defer(raw: str) -> Optional[str]:
@@ -9080,6 +9405,8 @@ class Tracker:
             "follow_up_sent_date":  "",
             "follow_up_count":      "0",
             "withdrawal_sent_date": "",
+            "follow_up_opt_out":    "",
+            "withdraw_in_next_digest": "",
             "notes":                notes,
             "linkedin_contact":     contact,
             "email_ids":            "[]",

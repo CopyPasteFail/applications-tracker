@@ -124,8 +124,15 @@ Key settings to fill in:
 - `user.career_email` — the address emails are sent *from* (must be set up in Gmail → Settings → Accounts and Import → **Send mail as**)
 - `google_sheets.spreadsheet_id`
 - `gemini.api_key`
+- `gemini.models` — keep `gemini-2.5-flash-lite` or `gemini-2.5-flash` configured if you want free-tier Gemini Google Search grounding for missing contact-email discovery
 - `gmail.query` — see Gmail label tips below
 - `gmail.processing_labels` — optional Gmail labels used to mark pipeline stages after a successful sync
+
+Why the grounded-search model list is restricted:
+- The tracker's web contact discovery path uses Gemini Google Search grounding only for missing recruiter/privacy contact emails.
+- Google does not offer free-tier grounding on every Gemini model. Some models show free input/output pricing but still list Google Search grounding as unavailable on the free tier.
+- The tracker therefore restricts grounded search to models that currently expose Google Search grounding on the free tier, to avoid silently choosing a model that can do normal generation but cannot perform the grounded-search step.
+- Google can change free-tier availability per model over time. Before changing `gemini.models`, check the current pricing table: [Gemini Developer API pricing](https://ai.google.dev/gemini-api/docs/pricing)
 
 #### Gmail label query syntax
 
@@ -298,10 +305,13 @@ Search by company or role, then choose an action:
 
 | Action | What it does |
 |---|---|
-| `defer` | Skip until a future date. Accepts `7d`, `2w`, or `YYYY-MM-DD` |
-| `pause` | Remove from pipeline permanently until manually resumed |
-| `resume` | Clear deferral and set status back to Applied |
-| `email` | Set or fix the contact email for follow-ups and withdrawals |
+| `defer` or `d` | Skip until a future date. Accepts `7d`, `2w`, or `YYYY-MM-DD` |
+| `pause` or `p` | Remove from pipeline permanently until manually resumed |
+| `resume` or `r` | Clear deferral and set status back to Applied |
+| `email` or `e` | Set or fix the contact email for follow-ups and withdrawals |
+| `policy` or `o` | Control action opt-outs for this row, including suppressing follow-up or deletion-request drafting |
+| `withdraw` or `w` | Queue a manual withdrawal for the next digest, even if the normal withdrawal threshold has not passed yet |
+| `exit` or `c` | Exit without changing the application |
 
 You can also do all of these directly in the Google Sheet, or via the **Job Tracker** menu (Apps Script — see below).
 
@@ -353,6 +363,7 @@ If a template file is missing, Gemini generates the email body as a fallback.
 | `follow_up_count` | Number of follow-ups sent |
 | `withdrawal_sent_date` | Date withdrawal was sent |
 | `deletion_request_sent_date` | Date a privacy / GDPR deletion request was sent |
+| `follow_up_opt_out` | Set to `yes` / `true` / `1` / `skip` to suppress follow-up drafting for this row while still allowing withdrawal timing to continue |
 | `deletion_request_opt_out` | Set to `yes` / `true` / `1` / `skip` to suppress deletion-request drafting for this row |
 | `deferred_until` | Skip pipeline until this date (YYYY-MM-DD) |
 | `notes` | Free text - edit manually |

@@ -2,6 +2,7 @@ import unittest
 
 from tracker import (
     build_company_search_tokens,
+    build_related_gmail_search_terms,
     choose_best_contact_email_for_action,
     choose_preferred_role_title,
     detect_text_language,
@@ -20,6 +21,7 @@ from tracker import (
     is_search_result_likely_related_to_company,
     is_unusable_outbound_email,
     is_unsolicited_recruiter_outreach_email,
+    resolve_outbound_target_email,
     score_contact_email_for_action,
 )
 
@@ -167,6 +169,34 @@ class OutreachDetectionTests(unittest.TestCase):
         )
         self.assertEqual(extract_status_from_email_message(message), "Rejected")
 
+    def test_rejection_reply_with_quoted_follow_up_is_not_treated_as_outreach(self) -> None:
+        message = make_email_message(
+            from_header="Jorden Chan <jchan@client-server.com>",
+            subject="Re: Following Up - Senior Platform Engineer AWS IaC Application",
+            body=(
+                "Hi Omer,\n\n"
+                "Thanks for following up. My apologies for not coming back to you, they have "
+                "actually closed the position now. They found someone who was very cheap on "
+                "the market.\n\n"
+                "Wishing you all the best and happy to stay in touch for future opportunities!\n\n"
+                "Jorden Chan\n\n"
+                "-----Original Message-----\n"
+                "From: omer.reznik.career@gmail.com <omer.reznik.career@gmail.com>\n"
+                "Sent: 26 March 2026 19:43\n"
+                "To: Jorden Chan <jchan@client-server.com>\n"
+                "Subject: Following Up - Senior Platform Engineer AWS IaC Application\n\n"
+                "Hi Jorden,\n\n"
+                "I wanted to follow up on my application for the Senior Platform Engineer AWS "
+                "IaC position at Client Server.\n\n"
+                "I remain very interested in the opportunity and would love to learn more about "
+                "the next steps in the process.\n"
+            ),
+        )
+
+        self.assertEqual(extract_status_from_email_message(message), "Rejected")
+        self.assertTrue(has_strong_application_signal(message))
+        self.assertFalse(is_unsolicited_recruiter_outreach_email(message))
+
     def test_follow_up_prefers_hiring_contact_over_privacy_contact(self) -> None:
         self.assertEqual(
             choose_best_contact_email_for_action(
@@ -194,11 +224,39 @@ class OutreachDetectionTests(unittest.TestCase):
             "jane.doe@example.com",
         )
 
+    def test_follow_up_rejects_privacy_only_contact(self) -> None:
+        self.assertEqual(
+            resolve_outbound_target_email(
+                {
+                    "contact_email": "privacy@example.com",
+                    "recruiter_email": "",
+                    "ats_email": "",
+                },
+                "follow_up",
+            ),
+            "",
+        )
+
     def test_privacy_scores_higher_for_deletion_than_follow_up(self) -> None:
         self.assertGreater(
             score_contact_email_for_action("privacy@example.com", "deletion_request"),
             score_contact_email_for_action("privacy@example.com", "follow_up"),
         )
+
+    def test_related_search_terms_ignore_privacy_contacts(self) -> None:
+        search_terms = build_related_gmail_search_terms(
+            {
+                "company": "Oversight",
+                "recruiter_email": "",
+                "ats_email": "jobs@oversight.example",
+                "contact_email": "privacy@cyberreact.example",
+            }
+        )
+
+        self.assertIn('"Oversight"', search_terms)
+        self.assertIn("from:jobs@oversight.example", search_terms)
+        self.assertNotIn("from:privacy@cyberreact.example", search_terms)
+        self.assertNotIn("from:cyberreact.example", search_terms)
 
     def test_extract_first_json_object_handles_fenced_json(self) -> None:
         self.assertEqual(
