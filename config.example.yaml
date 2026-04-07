@@ -35,9 +35,10 @@ gemini:
   rate_limit_max_retries_per_batch: 2
 
 thresholds:
-  follow_up_days: 7
-  withdraw_days: 14
+  follow_up_days: 8
+  withdraw_days: 16
   follow_up_repeat_days: 7
+  deletion_request_days: 0
 
 templates:
   follow_up:  "templates/follow_up.txt"
