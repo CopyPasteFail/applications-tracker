@@ -332,6 +332,7 @@ Digest behavior:
 ## Email templates
 
 Templates live in `templates/` as plain `.txt` files. Edit them freely — no code changes needed.
+`follow_up.txt` is used for the first follow-up, and `follow_up_second.txt` is used for the second follow-up and any later follow-ups.
 
 Available variables: `{{user_name}}`, `{{company}}`, `{{role}}`, `{{recruiter_name}}`
 

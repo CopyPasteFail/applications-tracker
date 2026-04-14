@@ -42,4 +42,5 @@ thresholds:
 
 templates:
   follow_up:  "templates/follow_up.txt"
+  follow_up_second: "templates/follow_up_second.txt"
   withdrawal: "templates/withdrawal.txt"

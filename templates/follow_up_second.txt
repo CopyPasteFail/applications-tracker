@@ -2,9 +2,11 @@ Subject: Following Up – {{role}} Application
 
 {{#if salutation_name}}Dear {{salutation_name}},{{else}}Dear Hiring Team,{{/if}}
 
-I wanted to follow up on my application for the {{role}} position at {{company}}.
+I wanted to check in once more on my application for the {{role}} position at {{company}}.
 
-I’m remain interested in the role and think I could bring a lot of value here. Whether things are still early in the process or already moving along, I’d be glad to hear where things stand when you have a moment.
+I’m still interested, but I also have other processes moving and need to make decisions soon. If the team is still considering me, I’d really appreciate a quick update.
+
+If I don’t hear back, I’ll assume timing isn’t right and I’ll step back from the process on my side.
 
 Looking forward to hearing from you.
 

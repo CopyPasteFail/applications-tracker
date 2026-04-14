@@ -17,6 +17,8 @@ Usage:
   python tracker.py --resync-all      # force all email-backed applications to be reprocessed
 """
 
+__version__ = "0.1.0"
+
 import json
 import uuid
 import base64
@@ -84,6 +86,13 @@ def _resolve_template(config: ConfigDict, key: str) -> Path:
         return p if p.is_absolute() else BASE_DIR / p
     return TEMPLATES_DIR / f"{key}.txt"
 
+
+def _resolve_follow_up_template(config: ConfigDict, follow_up_n: int) -> Path:
+    """Resolve the follow-up template path for the requested follow-up number."""
+    if follow_up_n >= 2:
+        return _resolve_template(config, "follow_up_second")
+    return _resolve_template(config, "follow_up")
+
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.labels",
@@ -141,6 +150,12 @@ SHEETS_INITIAL_RETRY_DELAY_SECONDS = 2.0
 DEFAULT_AI_GROUPING_BATCH_SIZE = 25
 DEFAULT_AI_RATE_LIMIT_MAX_WAIT_SECONDS = 60
 DEFAULT_AI_RATE_LIMIT_MAX_RETRIES_PER_BATCH = 2
+DEFAULT_AI_TRANSIENT_MODEL_RETRIES = 1
+DEFAULT_AI_TRANSIENT_MODEL_INITIAL_RETRY_DELAY_SECONDS = 1.0
+DEFAULT_AI_TRANSIENT_MODEL_BACKOFF_MULTIPLIER = 2.0
+DEFAULT_GOOGLE_API_TRANSIENT_RETRIES = 1
+DEFAULT_GOOGLE_API_TRANSIENT_INITIAL_RETRY_DELAY_SECONDS = 1.0
+DEFAULT_GOOGLE_API_TRANSIENT_BACKOFF_MULTIPLIER = 2.0
 FREE_TIER_GOOGLE_SEARCH_GROUNDED_MODEL_NAMES = (
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
@@ -161,6 +176,33 @@ console = Console()
 
 class TrackerError(Exception):
     """Raised when the tracker hits a user-facing operational error."""
+
+
+def is_transient_transport_disconnect(error_text: str) -> bool:
+    """
+    Detect transient transport-level disconnects before an HTTP API returns a response.
+
+    Inputs:
+    - error_text: Raw exception text returned by an SDK or HTTP client.
+
+    Outputs:
+    - True when the failure looks like a temporary socket/protocol disconnect.
+
+    Edge cases:
+    - Includes Windows socket abort wording (`WinError 10053`) in addition to the
+      existing httpcore-style disconnect messages.
+
+    Atomicity / concurrency:
+    - Pure helper with no side effects.
+    """
+    normalized_error_text = str(error_text or "").lower()
+    return (
+        "server disconnected without sending a response" in normalized_error_text
+        or "remoteprotocolerror" in normalized_error_text
+        or "winerror 10053" in normalized_error_text
+        or "an established connection was aborted by the software in your host machine" in normalized_error_text
+        or "connection aborted" in normalized_error_text
+    )
 
 
 def _persist_google_token(credentials: GoogleAuthCredentials) -> None:
@@ -1357,7 +1399,7 @@ def score_contact_email_for_action(email_address: str, action_type: str) -> int:
     if not is_ats_sender_domain(normalized_sender_domain):
         score += 35
 
-    privacy_markers = ("privacy", "gdpr", "dpo", "dataprotection", "dataprivacy", "legal", "compliance", "datenschutz")
+    privacy_markers = PRIVACY_CONTACT_LOCAL_PART_MARKERS
     hiring_team_markers = ("recruit", "recruiting", "talent", "careers", "career", "jobs", "hiring", "hr", "people")
     generic_markers = ("info", "hello", "contact", "support", "office", "team")
     person_like_markers = ("firstname.lastname",)
@@ -1380,6 +1422,42 @@ def score_contact_email_for_action(email_address: str, action_type: str) -> int:
         score += 0
 
     return score
+
+
+PRIVACY_CONTACT_LOCAL_PART_MARKERS = (
+    "privacy",
+    "gdpr",
+    "dpo",
+    "dataprotection",
+    "dataprivacy",
+    "legal",
+    "compliance",
+    "datenschutz",
+)
+
+
+def is_privacy_style_contact_email(email_address: str) -> bool:
+    """
+    Check whether an email address clearly looks like a privacy/GDPR/legal contact.
+
+    Inputs:
+    - email_address: Candidate email address to evaluate.
+
+    Outputs:
+    - True when the local part contains common privacy mailbox markers.
+
+    Edge cases:
+    - Malformed or unusable email addresses return False.
+
+    Atomicity / concurrency:
+    - Pure helper with no shared mutable state.
+    """
+    normalized_email_address = extract_email_address(email_address).strip().lower()
+    if not normalized_email_address or is_unusable_outbound_email(normalized_email_address):
+        return False
+    local_part = normalized_email_address.split("@", 1)[0]
+    normalized_local_part = re.sub(r"[^a-z0-9]+", "", local_part)
+    return any(marker in normalized_local_part for marker in PRIVACY_CONTACT_LOCAL_PART_MARKERS)
 
 
 def choose_best_contact_email_for_action(
@@ -3736,12 +3814,28 @@ class GmailClient:
         if from_addr:
             msg["From"] = from_addr
         raw   = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-        try:
-            draft = cast(JsonObject, self.service.users().drafts().create(
-                userId="me", body={"message": {"raw": raw}}
-            ).execute())
-        except Exception as error:
-            raise TrackerError(f"Failed to create Gmail draft for {to}: {error}") from error
+        retry_delay_seconds = DEFAULT_GOOGLE_API_TRANSIENT_INITIAL_RETRY_DELAY_SECONDS
+        for attempt_number in range(DEFAULT_GOOGLE_API_TRANSIENT_RETRIES + 1):
+            try:
+                draft = cast(JsonObject, self.service.users().drafts().create(
+                    userId="me", body={"message": {"raw": raw}}
+                ).execute())
+                break
+            except Exception as error:
+                if (
+                    is_transient_transport_disconnect(str(error))
+                    and attempt_number < DEFAULT_GOOGLE_API_TRANSIENT_RETRIES
+                ):
+                    console.print(
+                        f"[yellow]  Gmail draft retry: {to or '(manual draft)'} failed due to "
+                        f"transport disconnect before response. Waiting {retry_delay_seconds:.1f}s "
+                        f"before retry {attempt_number + 2} of "
+                        f"{DEFAULT_GOOGLE_API_TRANSIENT_RETRIES + 1}.[/yellow]"
+                    )
+                    time.sleep(retry_delay_seconds)
+                    retry_delay_seconds *= max(1.0, DEFAULT_GOOGLE_API_TRANSIENT_BACKOFF_MULTIPLIER)
+                    continue
+                raise TrackerError(f"Failed to create Gmail draft for {to}: {error}") from error
         return draft["id"]
 
     def send_draft(self, draft_id: str) -> None:
@@ -5018,6 +5112,80 @@ class AIGrouper:
             )
         )
 
+    def _is_transient_model_unavailable(self, error_text: str) -> bool:
+        """
+        Detect temporary Gemini model unavailability that should use the retry/fallback path.
+
+        Inputs:
+        - error_text: Raw exception text returned by the Gemini SDK.
+
+        Outputs:
+        - True when the failure looks like a temporary 503/high-demand event.
+
+        Edge cases:
+        - Requires both a 503 signal and temporary-unavailability wording to avoid masking
+          unrelated backend configuration failures as retryable.
+
+        Atomicity / concurrency:
+        - Pure helper with no side effects.
+        """
+        normalized_error_text = error_text.lower()
+        has_503_signal = "503" in error_text or "'code': 503" in normalized_error_text
+        has_temporary_unavailable_signal = (
+            "status': 'unavailable'" in normalized_error_text
+            or '"status": "unavailable"' in normalized_error_text
+            or "currently experiencing high demand" in normalized_error_text
+            or "spikes in demand are usually temporary" in normalized_error_text
+            or "please try again later" in normalized_error_text
+        )
+        return has_503_signal and has_temporary_unavailable_signal
+
+    def _is_transient_transport_disconnect(self, error_text: str) -> bool:
+        """
+        Detect transport-level disconnects before Gemini returns an HTTP response.
+
+        Inputs:
+        - error_text: Raw exception text returned by the Gemini SDK or HTTP client.
+
+        Outputs:
+        - True when the connection appears to have closed before response headers arrived.
+
+        Edge cases:
+        - Matches current httpcore wording while remaining tolerant to exception class names
+          appearing in wrapped error strings.
+
+        Atomicity / concurrency:
+        - Pure helper with no side effects.
+        """
+        return is_transient_transport_disconnect(error_text)
+
+    def _describe_retryable_model_error(self, error_text: str) -> str:
+        """
+        Build a concise reason string for retryable Gemini failures.
+
+        Inputs:
+        - error_text: Raw exception text returned by the Gemini SDK.
+
+        Outputs:
+        - Human-readable reason suitable for stdout logging.
+
+        Edge cases:
+        - Prefers specific provider wording like "high demand" over generic status codes.
+
+        Atomicity / concurrency:
+        - Pure helper with no side effects.
+        """
+        normalized_error_text = error_text.lower()
+        if self._is_daily_quota_exhausted(error_text):
+            return "daily quota exhausted"
+        if self._is_transient_transport_disconnect(error_text):
+            return "transport disconnect before response"
+        if "429" in error_text or "resource_exhausted" in normalized_error_text:
+            return "quota or rate limits"
+        if self._is_transient_model_unavailable(error_text):
+            return "temporary high demand (503 UNAVAILABLE)"
+        return "temporary provider failure"
+
     def _generate_content(
         self,
         prompt: str,
@@ -5049,32 +5217,85 @@ class AIGrouper:
             raise TrackerError("No Gemini models are available for this request")
 
         for model_index, model_name in enumerate(candidate_model_names):
-            try:
-                models_client = cast(Any, self.client.models)
-                resp = models_client.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=generation_config,
+            configured_transient_model_retries = getattr(
+                self,
+                "transient_model_retries",
+                DEFAULT_AI_TRANSIENT_MODEL_RETRIES,
+            )
+            transient_model_retries = max(0, int(configured_transient_model_retries))
+            retry_delay_seconds = float(
+                getattr(
+                    self,
+                    "transient_model_initial_retry_delay_seconds",
+                    DEFAULT_AI_TRANSIENT_MODEL_INITIAL_RETRY_DELAY_SECONDS,
                 )
-            except Exception as error:
-                error_text = str(error)
-                normalized_error_text = error_text.lower()
-                if "429" in error_text or "resource_exhausted" in normalized_error_text:
-                    last_rate_limit_error = GeminiRateLimitError(
-                        message=f"Gemini request failed for model {model_name}: {error}",
-                        retry_delay_seconds=self._parse_retry_delay_seconds(error_text),
-                        is_daily_quota_exhausted=self._is_daily_quota_exhausted(error_text),
-                    )
-                    if model_index < len(candidate_model_names) - 1:
-                        console.print(
-                            f"[yellow]  Gemini model {model_name} is unavailable due to quota or rate limits. "
-                            f"Trying {candidate_model_names[model_index + 1]}.[/yellow]"
-                        )
-                        continue
-                    raise last_rate_limit_error from error
-                raise TrackerError(f"Gemini request failed for model {model_name}: {error}") from error
+            )
+            backoff_multiplier = float(
+                getattr(
+                    self,
+                    "transient_model_backoff_multiplier",
+                    DEFAULT_AI_TRANSIENT_MODEL_BACKOFF_MULTIPLIER,
+                )
+            )
 
-            return resp
+            for model_attempt in range(transient_model_retries + 1):
+                try:
+                    models_client = cast(Any, self.client.models)
+                    resp = models_client.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=generation_config,
+                    )
+                except Exception as error:
+                    error_text = str(error)
+                    normalized_error_text = error_text.lower()
+                    if self._is_transient_transport_disconnect(error_text):
+                        last_rate_limit_error = GeminiRateLimitError(
+                            message=f"Gemini request failed for model {model_name}: {error}",
+                            retry_delay_seconds=max(1, int(retry_delay_seconds)),
+                            is_daily_quota_exhausted=False,
+                        )
+                        if model_attempt < transient_model_retries:
+                            console.print(
+                                f"[yellow]  Gemini model retry: {model_name} failed due to "
+                                f"transport disconnect before response. Waiting "
+                                f"{retry_delay_seconds:.1f}s before retry {model_attempt + 2} "
+                                f"of {transient_model_retries + 1}.[/yellow]"
+                            )
+                            time.sleep(retry_delay_seconds)
+                            retry_delay_seconds *= max(1.0, backoff_multiplier)
+                            continue
+                        if model_index < len(candidate_model_names) - 1:
+                            console.print(
+                                f"[yellow]  Gemini model fallback: {model_name} failed due to "
+                                f"transport disconnect before response after "
+                                f"{transient_model_retries + 1} attempts. Falling back to "
+                                f"{candidate_model_names[model_index + 1]}.[/yellow]"
+                            )
+                            break
+                        raise last_rate_limit_error from error
+
+                    if (
+                        "429" in error_text
+                        or "resource_exhausted" in normalized_error_text
+                        or self._is_transient_model_unavailable(error_text)
+                    ):
+                        last_rate_limit_error = GeminiRateLimitError(
+                            message=f"Gemini request failed for model {model_name}: {error}",
+                            retry_delay_seconds=self._parse_retry_delay_seconds(error_text),
+                            is_daily_quota_exhausted=self._is_daily_quota_exhausted(error_text),
+                        )
+                        if model_index < len(candidate_model_names) - 1:
+                            retryable_reason = self._describe_retryable_model_error(error_text)
+                            console.print(
+                                f"[yellow]  Gemini model fallback: {model_name} failed due to "
+                                f"{retryable_reason}. Trying {candidate_model_names[model_index + 1]}.[/yellow]"
+                            )
+                            break
+                        raise last_rate_limit_error from error
+                    raise TrackerError(f"Gemini request failed for model {model_name}: {error}") from error
+
+                return resp
 
         if last_rate_limit_error is not None:
             raise last_rate_limit_error
@@ -6058,7 +6279,7 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
             "recruiter_name":  app.get("recruiter_name", ""),
             "salutation_name": salutation_name,
         }
-        result = render_template(_resolve_template(self._config, "follow_up"), variables)
+        result = render_template(_resolve_follow_up_template(self._config, follow_up_n), variables)
         if result:
             return result
 
@@ -7110,20 +7331,35 @@ class Tracker:
         app: ApplicationRecord,
         action_type: str,
         log_progress: bool = False,
+        allow_stored_recipient: bool = True,
+        privacy_only: bool = False,
     ) -> str:
         """
         Resolve a contact email using stored row data, related Gmail messages, then web lookup.
         """
         direct_target = resolve_outbound_target_email(app, action_type)
-        if direct_target:
+        if direct_target and allow_stored_recipient:
             if log_progress:
                 console.print(f"  Using stored recipient on row: [green]{direct_target}[/green]")
             return direct_target
 
         if log_progress:
-            console.print("  No usable recipient stored on the row.")
+            if direct_target and not allow_stored_recipient:
+                console.print(
+                    "  Stored recipient on the row is being kept as a fallback while "
+                    f"searching for a {'privacy' if action_type in {'withdraw', 'deletion_request'} else 'hiring'} contact: "
+                    f"[green]{direct_target}[/green]"
+                )
+            else:
+                console.print("  No usable recipient stored on the row.")
             console.print("  Checking application emails for a real contact…")
         known_contact_emails = self._extract_known_application_contact_emails(app, action_type)
+        if privacy_only:
+            known_contact_emails = [
+                contact_email
+                for contact_email in known_contact_emails
+                if is_privacy_style_contact_email(contact_email)
+            ]
         selected_known_contact_email = choose_best_contact_email_for_action(known_contact_emails, action_type)
         if selected_known_contact_email:
             if log_progress:
@@ -7143,6 +7379,13 @@ class Tracker:
             app=app,
             log_progress=log_progress,
         )
+        if discovered_contact_email and privacy_only and not is_privacy_style_contact_email(discovered_contact_email):
+            if log_progress:
+                console.print(
+                    "  Ignoring discovered recipient because it is not a privacy contact: "
+                    f"[yellow]{discovered_contact_email}[/yellow]"
+                )
+            discovered_contact_email = ""
         if discovered_contact_email and is_unusable_outbound_email(discovered_contact_email):
             if log_progress:
                 console.print(
@@ -7158,17 +7401,17 @@ class Tracker:
         self,
         app: ApplicationRecord,
         action_type: str,
-    ) -> str:
+    ) -> tuple[str, bool]:
         """
         For privacy-style actions, let the user explicitly keep the stored contact or
         override it manually before automatic discovery runs.
         """
         if action_type not in {"withdraw", "deletion_request"}:
-            return ""
+            return "", False
 
         existing_email = resolve_outbound_target_email(app, action_type)
         if not existing_email:
-            return ""
+            return "", False
 
         company_name = str(app.get("company", "") or "").strip() or "Unknown company"
         role_title = str(app.get("role", "") or "").strip() or "Unknown role"
@@ -7183,13 +7426,64 @@ class Tracker:
         while True:
             choice = Prompt.ask("  Select option", default="").strip().lower()
             if choice in ("u", ""):
-                return existing_email
+                return existing_email, False
             if choice == "m":
                 confirmed_email = self._confirm_email_value("")
-                return confirmed_email
+                return confirmed_email, False
             if choice == "s":
-                return ""
+                return "", True
             console.print("[red]  Choose u / m / s, or press Enter to use stored.[/red]")
+
+    def _resolve_privacy_contact_after_search_choice(
+        self,
+        app: ApplicationRecord,
+        action_type: str,
+    ) -> str:
+        """
+        Run an explicit privacy-contact search, then re-prompt with the stored email if needed.
+        """
+        discovered_privacy_contact = self._resolve_company_contact_email(
+            app,
+            action_type,
+            log_progress=True,
+            allow_stored_recipient=False,
+            privacy_only=True,
+        )
+        if discovered_privacy_contact:
+            return discovered_privacy_contact
+        return self._prompt_for_privacy_contact_after_failed_search(app, action_type)
+
+    def _prompt_for_privacy_contact_after_failed_search(
+        self,
+        app: ApplicationRecord,
+        action_type: str,
+    ) -> str:
+        """
+        After an explicit privacy search fails, offer the stored recipient or a manual override.
+        """
+        if action_type not in {"withdraw", "deletion_request"}:
+            return ""
+
+        existing_email = resolve_outbound_target_email(app, action_type)
+        if not existing_email:
+            return ""
+
+        company_name = str(app.get("company", "") or "").strip() or "Unknown company"
+        role_title = str(app.get("role", "") or "").strip() or "Unknown role"
+        console.print(
+            "  No trusted privacy contact found for "
+            f"[cyan]{company_name}[/cyan] — {role_title}."
+        )
+        console.print(f"  Available recipient on the row: [green]{existing_email}[/green]")
+        console.print("  Choose: (Enter/u) use available email  (m) set manual email")
+
+        while True:
+            choice = Prompt.ask("  Select option", default="").strip().lower()
+            if choice in ("u", ""):
+                return existing_email
+            if choice == "m":
+                return self._confirm_email_value("")
+            console.print("[red]  Choose u / m, or press Enter to use the available email.[/red]")
 
     def _persist_resolved_contact_email(
         self,
@@ -9060,7 +9354,9 @@ class Tracker:
             )
 
             # Resolve target email
-            contact = self._choose_existing_or_manual_privacy_contact(app, atype)
+            contact, should_search_privacy_contact = self._choose_existing_or_manual_privacy_contact(app, atype)
+            if should_search_privacy_contact:
+                contact = self._resolve_privacy_contact_after_search_choice(app, atype)
             if not contact:
                 contact = self._resolve_company_contact_email(app, atype, log_progress=True)
             if contact:
@@ -9423,6 +9719,7 @@ class Tracker:
 
 def main():
     p = argparse.ArgumentParser(description="Job Application Tracker")
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--sync",          action="store_true", help="Fetch emails and update Sheets")
     g.add_argument("--digest",        action="store_true", help="Sync + compute actions + create drafts")

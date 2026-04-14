@@ -119,6 +119,52 @@ class ManageActionTests(unittest.TestCase):
         )
         self.assertEqual(app["contact_email"], "recruiting@example.com")
 
+    def test_explicit_privacy_search_rejects_generic_contacts(self) -> None:
+        tracker = Tracker.__new__(Tracker)
+        tracker._extract_known_application_contact_emails = Mock(return_value=["recruiting@example.com"])
+        tracker._discover_company_contact_via_web = Mock(return_value="careers@example.com")
+        app = {
+            "company": "Acme",
+            "contact_email": "contact@acme.example",
+            "recruiter_email": "",
+            "ats_email": "",
+        }
+
+        with patch("tracker.console.print"):
+            contact = tracker._resolve_company_contact_email(
+                app,
+                "deletion_request",
+                log_progress=True,
+                allow_stored_recipient=False,
+                privacy_only=True,
+            )
+
+        self.assertEqual(contact, "")
+        tracker._discover_company_contact_via_web.assert_called_once()
+
+    def test_failed_privacy_search_reprompts_with_stored_email_option(self) -> None:
+        tracker = Tracker.__new__(Tracker)
+        tracker._resolve_company_contact_email = Mock(return_value="")
+        app = {
+            "company": "Acme",
+            "role": "Founding Engineer",
+            "contact_email": "contact@acme.example",
+            "recruiter_email": "",
+            "ats_email": "",
+        }
+
+        with patch("tracker.console.print"), patch("tracker.Prompt.ask", return_value=""):
+            contact = tracker._resolve_privacy_contact_after_search_choice(app, "deletion_request")
+
+        self.assertEqual(contact, "contact@acme.example")
+        tracker._resolve_company_contact_email.assert_called_once_with(
+            app,
+            "deletion_request",
+            log_progress=True,
+            allow_stored_recipient=False,
+            privacy_only=True,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
