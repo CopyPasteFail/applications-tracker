@@ -4,7 +4,7 @@ Subject: Following Up – {{role}} Application
 
 I wanted to follow up on my application for the {{role}} position at {{company}}.
 
-I’m remain interested in the role and think I could bring a lot of value here. Whether things are still early in the process or already moving along, I’d be glad to hear where things stand when you have a moment.
+I remain interested in the role and think I could bring a lot of value here. Whether things are still early in the process or already moving along, I’d be glad to hear where things stand when you have a moment.
 
 Looking forward to hearing from you.
 

@@ -15,9 +15,10 @@ Usage:
   python tracker.py --debug-message-ids ID [ID ...] # inspect AI grouping for specific Gmail messages
   python tracker.py --resync-app ID   # force one email-backed application to be reprocessed
   python tracker.py --resync-all      # force all email-backed applications to be reprocessed
+  python tracker.py --resume-run ID   # resume a saved AI grouping run after a fail-closed abort
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 import json
 import uuid
@@ -29,6 +30,7 @@ import time
 import html
 import io
 import calendar
+import copy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parseaddr, parsedate_to_datetime
@@ -77,6 +79,7 @@ PENDING_PATH   = BASE_DIR / "pending_actions.json"
 STATE_DIR      = BASE_DIR / "state"
 PROCESSED_GMAIL_STATE_PATH = STATE_DIR / "processed_gmail_message_ids.json"
 TEMPLATES_DIR  = BASE_DIR / "templates"
+GROUPING_RUNS_DIR = STATE_DIR / "grouping_runs"
 
 def _resolve_template(config: ConfigDict, key: str) -> Path:
     """Resolve a template path from config, falling back to the default location."""
@@ -148,6 +151,8 @@ SHEETS_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 SHEETS_MAX_WRITE_RETRIES = 5
 SHEETS_INITIAL_RETRY_DELAY_SECONDS = 2.0
 DEFAULT_AI_GROUPING_BATCH_SIZE = 25
+DEFAULT_AI_GROUPING_CLUSTER_SIZE = 10
+DEFAULT_AI_GROUPING_CLUSTER_EMERGENCY_MARGIN = 2
 DEFAULT_AI_RATE_LIMIT_MAX_WAIT_SECONDS = 60
 DEFAULT_AI_RATE_LIMIT_MAX_RETRIES_PER_BATCH = 2
 DEFAULT_AI_TRANSIENT_MODEL_RETRIES = 1
@@ -202,6 +207,39 @@ def is_transient_transport_disconnect(error_text: str) -> bool:
         or "winerror 10053" in normalized_error_text
         or "an established connection was aborted by the software in your host machine" in normalized_error_text
         or "connection aborted" in normalized_error_text
+    )
+
+
+def is_json_parse_error_text(error_text: str) -> bool:
+    """
+    Detect common JSON parsing failures from Gemini structured-output responses.
+
+    Inputs:
+    - error_text: Raw exception text bubbled up from JSON parsing or validation.
+
+    Outputs:
+    - True when the text looks like malformed JSON returned by the model.
+
+    Edge cases:
+    - Supports both direct `json.JSONDecodeError` wording and simplified stringified
+      error messages used in tests and wrapped exceptions.
+
+    Atomicity / concurrency:
+    - Pure helper with no side effects.
+    """
+    normalized_error_text = str(error_text or "").lower()
+    return any(
+        token in normalized_error_text
+        for token in (
+            "unterminated string",
+            "expecting value",
+            "expecting property name",
+            "extra data",
+            "invalid control character",
+            "invalid \\escape",
+            "delimiter",
+            "jsondecodeerror",
+        )
     )
 
 
@@ -3738,6 +3776,21 @@ class GmailClient:
             return b""
         return base64.urlsafe_b64decode(raw_data + "==")
 
+    def _log_pdf_attachment_issue(
+        self,
+        message_id: str,
+        filename: str,
+        error: Exception,
+    ) -> None:
+        """
+        Emit a searchable warning when a PDF attachment cannot be read.
+        """
+        attachment_label = filename or "(unnamed attachment)"
+        console.print(
+            f"[yellow]  PDF attachment issue: message_id={message_id} "
+            f"filename={attachment_label} error={error}[/yellow]"
+        )
+
     def _extract_attachment_text(self, message_id: str, payload: JsonObject) -> str:
         """
         Extract readable text from Gmail attachments, prioritizing PDFs.
@@ -3745,10 +3798,12 @@ class GmailClient:
         extracted_text_chunks: list[str] = []
         for part in self._iter_payload_parts(payload):
             mime = str(part.get("mimeType", "") or "").lower()
-            filename = str(part.get("filename", "") or "").strip().lower()
+            raw_filename = str(part.get("filename", "") or "").strip()
+            filename = raw_filename.lower()
             body = cast(JsonObject, part.get("body", {}) or {})
             attachment_id = str(body.get("attachmentId", "") or "").strip()
             inline_data = str(body.get("data", "") or "")
+            is_pdf_attachment = mime == "application/pdf" or filename.endswith(".pdf")
 
             if mime not in {"application/pdf", "text/plain", "text/html"} and not filename.endswith(".pdf"):
                 continue
@@ -3757,18 +3812,22 @@ class GmailClient:
             if attachment_id:
                 try:
                     attachment_bytes = self._fetch_attachment_bytes(message_id, attachment_id)
-                except Exception:
+                except Exception as error:
+                    if is_pdf_attachment:
+                        self._log_pdf_attachment_issue(message_id, raw_filename, error)
                     continue
             elif inline_data:
                 try:
                     attachment_bytes = base64.urlsafe_b64decode(inline_data + "==")
-                except Exception:
+                except Exception as error:
+                    if is_pdf_attachment:
+                        self._log_pdf_attachment_issue(message_id, raw_filename, error)
                     continue
             if not attachment_bytes:
                 continue
 
             try:
-                if mime == "application/pdf" or filename.endswith(".pdf"):
+                if is_pdf_attachment:
                     pdf_reader = PdfReader(io.BytesIO(attachment_bytes))
                     pdf_text = "\n".join(
                         (page.extract_text() or "").strip()
@@ -3781,7 +3840,9 @@ class GmailClient:
                 elif mime == "text/html":
                     html_text = attachment_bytes.decode("utf-8", errors="replace")
                     extracted_text_chunks.append(re.sub(r"<[^>]+>", " ", html_text))
-            except Exception:
+            except Exception as error:
+                if is_pdf_attachment:
+                    self._log_pdf_attachment_issue(message_id, raw_filename, error)
                 continue
 
         normalized_attachment_text = "\n\n".join(
@@ -6271,7 +6332,12 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
     ) -> tuple[str, str]:
         """Returns (subject, body). Uses template if available, Gemini as fallback."""
         company_display_name = self._resolve_outreach_company_name(app)
-        salutation_name = self._resolve_outreach_salutation_name(app, company_display_name)
+        resolved_target_email = resolve_outbound_target_email(app, "follow_up")
+        salutation_name = self._resolve_outreach_salutation_name(
+            app,
+            company_display_name,
+            resolved_target_email,
+        )
         variables: dict[str, str] = {
             "user_name":       user_name,
             "company":         company_display_name,
@@ -6294,7 +6360,12 @@ No filler openers like "I hope this email finds you well"."""
     def generate_withdrawal(self, app: ApplicationRecord, user_name: str) -> tuple[str, str]:
         """Returns (subject, body). Uses template if available, Gemini as fallback."""
         company_display_name = self._resolve_outreach_company_name(app)
-        salutation_name = self._resolve_outreach_salutation_name(app, company_display_name)
+        resolved_target_email = resolve_outbound_target_email(app, "withdraw")
+        salutation_name = self._resolve_outreach_salutation_name(
+            app,
+            company_display_name,
+            resolved_target_email,
+        )
         variables: dict[str, str] = {
             "user_name":       user_name,
             "company":         company_display_name,
@@ -6315,7 +6386,12 @@ Return format — first line: Subject: <subject line>, then a blank line, then t
     def generate_deletion_request(self, app: ApplicationRecord, user_name: str) -> tuple[str, str]:
         """Returns (subject, body). Uses template if available, Gemini as fallback."""
         company_display_name = self._resolve_outreach_company_name(app)
-        salutation_name = self._resolve_outreach_salutation_name(app, company_display_name)
+        resolved_target_email = resolve_outbound_target_email(app, "deletion_request")
+        salutation_name = self._resolve_outreach_salutation_name(
+            app,
+            company_display_name,
+            resolved_target_email,
+        )
         variables: dict[str, str] = {
             "user_name":       user_name,
             "company":         company_display_name,
@@ -6367,10 +6443,18 @@ Return format — first line: Subject: <subject line>, then a blank line, then t
         self,
         app: ApplicationRecord,
         company_display_name: str,
+        resolved_target_email: str = "",
     ) -> str:
         recruiter_name = str(app.get("recruiter_name", "") or "").strip()
-        if recruiter_name and not is_unusable_recruiter_name(recruiter_name):
-            return recruiter_name
+        recruiter_email = extract_email_address(str(app.get("recruiter_email", "") or ""))
+        normalized_target_email = extract_email_address(resolved_target_email)
+        if (
+            recruiter_name
+            and not is_unusable_recruiter_name(recruiter_name)
+            and recruiter_email
+            and normalized_target_email == recruiter_email
+        ):
+            return recruiter_name.split()[0]
         if company_display_name and company_display_name != "the company":
             return f"{company_display_name} Hiring Team"
         return "Hiring Team"
@@ -6570,6 +6654,545 @@ class Tracker:
         self.sheets = SheetsClient(self.cfg)
         self.ai     = AIGrouper(self.cfg)
         self.engine = FollowUpEngine(self.cfg)
+
+    def _grouping_run_state_dir(self) -> Path:
+        return cast(Path, getattr(self, "grouping_run_state_dir", GROUPING_RUNS_DIR))
+
+    def _grouping_run_state_path(self, run_id: str) -> Path:
+        return self._grouping_run_state_dir() / f"{run_id}.json"
+
+    @staticmethod
+    def _new_grouping_run_id() -> str:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
+
+    def _save_grouping_run_state(self, run_state: JsonObject) -> Path:
+        run_id = str(run_state.get("run_id", "") or "").strip()
+        if not run_id:
+            raise TrackerError("Could not save grouping run state because run_id was missing")
+        state_path = self._grouping_run_state_path(run_id)
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(
+                json.dumps(run_state, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        except OSError as error:
+            raise TrackerError(f"Could not write grouping run state to {state_path}: {error}") from error
+        return state_path
+
+    def _load_grouping_run_state(self, run_id: str) -> JsonObject:
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            raise TrackerError("resume-run requires a non-empty saved run ID")
+
+        state_path = self._grouping_run_state_path(normalized_run_id)
+        if not state_path.exists():
+            raise TrackerError(f"Saved grouping run '{normalized_run_id}' was not found at {state_path}")
+
+        try:
+            payload = cast(JsonObject, json.loads(state_path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError) as error:
+            raise TrackerError(f"Could not load saved grouping run '{normalized_run_id}': {error}") from error
+        return payload
+
+    def _delete_grouping_run_state(self, run_id: str) -> None:
+        state_path = self._grouping_run_state_path(run_id)
+        try:
+            if state_path.exists():
+                state_path.unlink()
+        except OSError as error:
+            raise TrackerError(f"Could not delete saved grouping run state {state_path}: {error}") from error
+
+    @staticmethod
+    def _merge_updates_into_working_existing(
+        working_existing: list[ApplicationRecord],
+        updates: list[ApplicationRecord],
+    ) -> list[ApplicationRecord]:
+        merged_existing = copy.deepcopy(working_existing)
+        for update in updates:
+            appl_id = str(update.get("appl_id", "") or "").strip()
+            if not appl_id:
+                continue
+            existing_index = next(
+                (
+                    index
+                    for index, existing_application in enumerate(merged_existing)
+                    if existing_application.get("appl_id") == appl_id
+                ),
+                None,
+            )
+            if existing_index is not None:
+                merged_existing[existing_index] = copy.deepcopy(update)
+            else:
+                merged_existing.append(copy.deepcopy(update))
+        return merged_existing
+
+    def _build_grouping_clusters(
+        self,
+        new_emails: list[GmailMessage],
+        existing_apps: list[ApplicationRecord],
+        transport_window_size: int,
+        cluster_size_limit: int,
+        cluster_emergency_margin: int,
+    ) -> list[JsonObject]:
+        """
+        Partition new Gmail messages into merge-biased AI grouping clusters.
+
+        Inputs:
+        - new_emails: Sorted Gmail messages that still need AI grouping.
+        - existing_apps: Existing application rows used to seed thread-based matching hints.
+        - transport_window_size: Maximum number of raw inbox messages considered together when
+          planning clusters.
+        - cluster_size_limit: Normal maximum cluster size passed to Gemini in one call.
+        - cluster_emergency_margin: Extra overflow slots allowed for strong same-application matches.
+
+        Outputs:
+        - Serializable cluster plan entries with status metadata for saved-run persistence.
+
+        Edge cases:
+        - Empty input returns an empty list.
+        - Ambiguous emails prefer merging into the best existing cluster instead of splitting.
+        - Strong same-thread/application matches may overflow the limit by up to the configured
+          emergency margin.
+
+        Atomicity / concurrency:
+        - Pure in-memory planning with no external side effects.
+        """
+        if not new_emails:
+            return []
+
+        normalized_window_size = max(1, int(transport_window_size))
+        normalized_cluster_size_limit = max(1, int(cluster_size_limit))
+        normalized_cluster_emergency_margin = max(0, int(cluster_emergency_margin))
+        existing_apps_by_id = {
+            str(app.get("appl_id", "") or "").strip(): app
+            for app in existing_apps
+            if str(app.get("appl_id", "") or "").strip()
+        }
+
+        def build_email_hints(email_message: GmailMessage) -> JsonObject:
+            sender_email_address = resolve_message_sender_email(email_message)
+            sender_domain = extract_email_domain(sender_email_address)
+            company_hint = normalize_matching_text(
+                extract_company_name_from_email_message(email_message)
+                or infer_company_hint_from_sender_header(str(email_message.get("from", "") or ""))
+                or infer_company_hint_from_sender_domain(sender_domain)
+            )
+            role_hint = normalize_matching_text(
+                choose_preferred_role_title(*extract_role_titles_from_email_message(email_message))
+            )
+            existing_appl_id_hint = find_existing_application_id_by_thread_id(
+                existing_apps_by_id,
+                str(email_message.get("thread_id", "") or "").strip(),
+            )
+            return {
+                "email_id": str(email_message.get("id", "") or "").strip(),
+                "thread_id": str(email_message.get("thread_id", "") or "").strip(),
+                "sender_email": sender_email_address,
+                "sender_domain": sender_domain,
+                "company_hint": company_hint,
+                "role_hint": role_hint,
+                "existing_appl_id_hint": existing_appl_id_hint,
+                "has_strong_application_signal": has_strong_application_signal(email_message),
+            }
+
+        def score_email_against_cluster(email_hints: JsonObject, cluster_state: JsonObject) -> int:
+            score = 0
+            existing_appl_id_hint = str(email_hints.get("existing_appl_id_hint", "") or "").strip()
+            thread_id = str(email_hints.get("thread_id", "") or "").strip()
+            sender_email = str(email_hints.get("sender_email", "") or "").strip()
+            sender_domain = str(email_hints.get("sender_domain", "") or "").strip()
+            company_hint = str(email_hints.get("company_hint", "") or "").strip()
+            role_hint = str(email_hints.get("role_hint", "") or "").strip()
+
+            if existing_appl_id_hint and existing_appl_id_hint in cast(set[str], cluster_state["existing_appl_id_hints"]):
+                score += 12
+            if thread_id and thread_id in cast(set[str], cluster_state["thread_ids"]):
+                score += 10
+            if sender_email and sender_email in cast(set[str], cluster_state["sender_emails"]):
+                score += 4
+            if sender_domain and sender_domain in cast(set[str], cluster_state["sender_domains"]):
+                score += 2
+            if company_hint and company_hint in cast(set[str], cluster_state["company_hints"]):
+                score += 5
+            if role_hint and role_hint in cast(set[str], cluster_state["role_hints"]):
+                score += 4
+            if (
+                company_hint
+                and role_hint
+                and company_hint in cast(set[str], cluster_state["company_hints"])
+                and role_hint in cast(set[str], cluster_state["role_hints"])
+            ):
+                score += 3
+            if (
+                bool(email_hints.get("has_strong_application_signal"))
+                and bool(cluster_state.get("has_strong_application_signal"))
+            ):
+                score += 1
+            return score
+
+        def add_email_to_cluster(cluster_state: JsonObject, email_hints: JsonObject) -> None:
+            email_id = str(email_hints.get("email_id", "") or "").strip()
+            if email_id:
+                cast(list[str], cluster_state["email_ids"]).append(email_id)
+            for field_name in (
+                "thread_id",
+                "sender_email",
+                "sender_domain",
+                "company_hint",
+                "role_hint",
+                "existing_appl_id_hint",
+            ):
+                value = str(email_hints.get(field_name, "") or "").strip()
+                if not value:
+                    continue
+                target_key = f"{field_name}s"
+                if field_name == "existing_appl_id_hint":
+                    target_key = "existing_appl_id_hints"
+                cast(set[str], cluster_state[target_key]).add(value)
+            if bool(email_hints.get("has_strong_application_signal")):
+                cluster_state["has_strong_application_signal"] = True
+
+        planned_clusters: list[JsonObject] = []
+        cluster_counter = 0
+        total_window_count = -(-len(new_emails) // normalized_window_size)
+
+        for window_start in range(0, len(new_emails), normalized_window_size):
+            window_emails = new_emails[window_start : window_start + normalized_window_size]
+            window_number = window_start // normalized_window_size + 1
+            window_clusters: list[JsonObject] = []
+
+            for window_email in window_emails:
+                email_hints = build_email_hints(window_email)
+                best_cluster: Optional[JsonObject] = None
+                best_score = -1
+                for cluster_state in window_clusters:
+                    candidate_score = score_email_against_cluster(email_hints, cluster_state)
+                    if candidate_score > best_score:
+                        best_score = candidate_score
+                        best_cluster = cluster_state
+
+                should_merge = best_cluster is not None and best_score >= 4
+                if should_merge and best_cluster is not None:
+                    current_cluster_size = len(cast(list[str], best_cluster["email_ids"]))
+                    if current_cluster_size >= normalized_cluster_size_limit:
+                        can_use_emergency_overflow = (
+                            best_score >= 10
+                            and current_cluster_size
+                            < normalized_cluster_size_limit + normalized_cluster_emergency_margin
+                        )
+                        if can_use_emergency_overflow:
+                            best_cluster["emergency_overflow_used"] = True
+                            add_email_to_cluster(best_cluster, email_hints)
+                            continue
+                        should_merge = False
+                    else:
+                        add_email_to_cluster(best_cluster, email_hints)
+                        continue
+
+                if not should_merge:
+                    new_cluster_state: JsonObject = {
+                        "email_ids": [],
+                        "thread_ids": set(),
+                        "sender_emails": set(),
+                        "sender_domains": set(),
+                        "company_hints": set(),
+                        "role_hints": set(),
+                        "existing_appl_id_hints": set(),
+                        "has_strong_application_signal": False,
+                        "emergency_overflow_used": False,
+                    }
+                    add_email_to_cluster(new_cluster_state, email_hints)
+                    window_clusters.append(new_cluster_state)
+
+            for window_cluster in window_clusters:
+                cluster_counter += 1
+                cluster_email_ids = deduplicate_preserving_order(
+                    cast(list[str], window_cluster.get("email_ids", []))
+                )
+                planned_clusters.append({
+                    "cluster_id": f"cluster-{cluster_counter:03d}",
+                    "status": "pending",
+                    "error": "",
+                    "completed_at": "",
+                    "failed_at": "",
+                    "transport_window_number": window_number,
+                    "transport_window_total": total_window_count,
+                    "email_ids": cluster_email_ids,
+                    "email_count": len(cluster_email_ids),
+                    "emergency_overflow_used": bool(window_cluster.get("emergency_overflow_used")),
+                })
+
+        return planned_clusters
+
+    def _describe_grouping_failure_summary(self, failure_reason: str) -> str:
+        normalized_failure_reason = str(failure_reason or "").strip()
+        if is_json_parse_error_text(normalized_failure_reason):
+            return "Gemini returned malformed JSON while classifying new Gmail messages."
+        if "quota" in normalized_failure_reason.lower() or "rate limit" in normalized_failure_reason.lower():
+            return "Gemini rate limited while classifying new Gmail messages."
+        return "Gemini request failed while classifying new Gmail messages."
+
+    def _format_grouping_failure_message(
+        self,
+        *,
+        failure_reason: str,
+        cluster_number: int,
+        total_cluster_count: int,
+        cluster_email_count: int,
+        run_state_path: Path,
+        run_id: str,
+    ) -> str:
+        detail_label = "Parse error" if is_json_parse_error_text(failure_reason) else "Failure"
+        return (
+            f"AI grouping failed — {self._describe_grouping_failure_summary(failure_reason)}\n"
+            f"Cluster: {cluster_number} / {total_cluster_count}\n"
+            f"Emails in cluster: {cluster_email_count}\n"
+            f"Run state saved to: {run_state_path}\n"
+            f"{detail_label}: {failure_reason or 'Unknown Gemini failure'}\n"
+            "Sync aborted before updating Sheets.\n"
+            "Digest will not continue because actions could be stale.\n"
+            "\n"
+            "Recovery options:\n"
+            "  1. Rerun sync from scratch:\n"
+            "     python tracker.py --sync\n"
+            "  2. Resume this saved run:\n"
+            f"     python tracker.py --resume-run {run_id}"
+        )
+
+    def _apply_grouping_result_to_run_state(
+        self,
+        run_state: JsonObject,
+        grouping_result: EmailGroupingResult,
+    ) -> None:
+        initial_existing_appl_ids = set(cast(list[str], run_state.get("initial_existing_appl_ids", [])))
+        run_state["ignored_email_count"] = int(run_state.get("ignored_email_count", 0)) + grouping_result.ignored_email_count
+        handled_message_ids = cast(list[str], run_state.get("handled_message_ids", []))
+        handled_message_ids.extend(grouping_result.handled_message_ids)
+        run_state["handled_message_ids"] = deduplicate_preserving_order(handled_message_ids)
+        run_state["matched_existing_email_count"] = (
+            int(run_state.get("matched_existing_email_count", 0))
+            + grouping_result.matched_existing_email_count
+        )
+        run_state["new_application_email_count"] = (
+            int(run_state.get("new_application_email_count", 0))
+            + grouping_result.new_application_email_count
+        )
+
+        updated_existing_application_ids = set(cast(list[str], run_state.get("updated_existing_application_ids", [])))
+        created_application_ids = set(cast(list[str], run_state.get("created_application_ids", [])))
+        all_updates = cast(list[ApplicationRecord], run_state.get("all_updates", []))
+
+        for update in grouping_result.updates:
+            appl_id = str(update.get("appl_id", "") or "").strip()
+            if appl_id:
+                if appl_id in initial_existing_appl_ids:
+                    updated_existing_application_ids.add(appl_id)
+                else:
+                    created_application_ids.add(appl_id)
+            all_updates.append(copy.deepcopy(update))
+
+        run_state["updated_existing_application_ids"] = sorted(updated_existing_application_ids)
+        run_state["created_application_ids"] = sorted(created_application_ids)
+        run_state["all_updates"] = all_updates
+        run_state["working_existing"] = self._merge_updates_into_working_existing(
+            cast(list[ApplicationRecord], run_state.get("working_existing", [])),
+            grouping_result.updates,
+        )
+
+    def _execute_grouping_run(self, run_state: JsonObject) -> None:
+        gemini_config = self.cfg.get("gemini", {})
+        configured_max_rate_limit_wait_seconds = gemini_config.get(
+            "rate_limit_max_wait_seconds",
+            DEFAULT_AI_RATE_LIMIT_MAX_WAIT_SECONDS,
+        )
+        configured_max_rate_limit_retries_per_batch = gemini_config.get(
+            "rate_limit_max_retries_per_batch",
+            DEFAULT_AI_RATE_LIMIT_MAX_RETRIES_PER_BATCH,
+        )
+        max_rate_limit_wait_seconds = max(1, int(configured_max_rate_limit_wait_seconds))
+        max_rate_limit_retries_per_cluster = max(0, int(configured_max_rate_limit_retries_per_batch))
+        clusters = cast(list[JsonObject], run_state.get("clusters", []))
+        total_cluster_count = len(clusters)
+        run_id = str(run_state.get("run_id", "") or "").strip()
+        run_state_path = self._grouping_run_state_path(run_id)
+        email_map = {
+            str(email_message.get("id", "") or "").strip(): email_message
+            for email_message in cast(list[GmailMessage], run_state.get("new_emails", []))
+            if str(email_message.get("id", "") or "").strip()
+        }
+
+        for cluster_index, cluster in enumerate(clusters):
+            cluster_status = str(cluster.get("status", "") or "").strip().lower()
+            if cluster_status == "completed":
+                continue
+
+            cluster_email_ids = cast(list[str], cluster.get("email_ids", []))
+            cluster_emails = [
+                email_map[email_id]
+                for email_id in cluster_email_ids
+                if email_id in email_map
+            ]
+            cluster_number = cluster_index + 1
+            console.print(f"  AI grouping cluster {cluster_number} / {total_cluster_count} …")
+
+            grouping_result = EmailGroupingResult(
+                updates=[],
+                ignored_email_count=0,
+                handled_message_ids=[],
+                matched_existing_email_count=0,
+                new_application_email_count=0,
+                updated_existing_application_count=0,
+                created_application_count=0,
+            )
+            failure_reason = ""
+
+            for retry_attempt in range(max_rate_limit_retries_per_cluster + 1):
+                try:
+                    grouping_result = self.ai.group_emails(
+                        cluster_emails,
+                        cast(list[ApplicationRecord], run_state.get("working_existing", [])),
+                    )
+                    failure_reason = ""
+                    break
+                except GeminiRateLimitError as error:
+                    retry_delay_seconds = error.retry_delay_seconds or max_rate_limit_wait_seconds
+                    if error.is_daily_quota_exhausted:
+                        failure_reason = "Gemini daily quota exhausted while grouping new Gmail messages"
+                        break
+                    if retry_attempt >= max_rate_limit_retries_per_cluster:
+                        failure_reason = str(error)
+                        break
+                    if retry_delay_seconds > max_rate_limit_wait_seconds:
+                        failure_reason = (
+                            "Gemini requested a retry wait longer than the configured limit "
+                            f"({retry_delay_seconds}s)"
+                        )
+                        break
+                    console.print(
+                        f"[yellow]  Gemini rate limited this cluster. Waiting "
+                        f"{retry_delay_seconds}s before retry {retry_attempt + 2} "
+                        f"of {max_rate_limit_retries_per_cluster + 1}.[/yellow]"
+                    )
+                    time.sleep(retry_delay_seconds)
+                except Exception as error:
+                    failure_reason = str(error)
+                    break
+
+            if failure_reason:
+                cluster["status"] = "failed"
+                cluster["error"] = failure_reason
+                cluster["failed_at"] = datetime.now(timezone.utc).isoformat()
+                self._save_grouping_run_state(run_state)
+                raise TrackerError(
+                    self._format_grouping_failure_message(
+                        failure_reason=failure_reason,
+                        cluster_number=cluster_number,
+                        total_cluster_count=total_cluster_count,
+                        cluster_email_count=len(cluster_emails),
+                        run_state_path=run_state_path,
+                        run_id=run_id,
+                    )
+                )
+
+            self._apply_grouping_result_to_run_state(run_state, grouping_result)
+            cluster["status"] = "completed"
+            cluster["error"] = ""
+            cluster["failed_at"] = ""
+            cluster["completed_at"] = datetime.now(timezone.utc).isoformat()
+            self._save_grouping_run_state(run_state)
+
+    def _finalize_completed_sync_run(self, run_state: JsonObject) -> None:
+        all_updates = cast(list[ApplicationRecord], run_state.get("all_updates", []))
+        query = str(run_state.get("query", "") or "")
+        matched_existing_email_count = int(run_state.get("matched_existing_email_count", 0))
+        new_application_email_count = int(run_state.get("new_application_email_count", 0))
+        ignored_email_count = int(run_state.get("ignored_email_count", 0))
+        updated_existing_application_ids = set(cast(list[str], run_state.get("updated_existing_application_ids", [])))
+        created_application_ids = set(cast(list[str], run_state.get("created_application_ids", [])))
+
+        relevant_email_count = matched_existing_email_count + new_application_email_count
+        unique_updated_appl_ids = {update["appl_id"] for update in all_updates if update.get("appl_id")}
+        merged_email_count = max(0, relevant_email_count - len(unique_updated_appl_ids))
+        console.print(
+            "  Grouping summary: "
+            f"[green]{relevant_email_count}[/green] relevant emails, "
+            f"[green]{ignored_email_count}[/green] ignored"
+        )
+        console.print(
+            "  Application impact: "
+            f"[green]{len(updated_existing_application_ids)}[/green] existing applications updated, "
+            f"[green]{len(created_application_ids)}[/green] new applications created, "
+            f"[green]{merged_email_count}[/green] emails merged into shared records"
+        )
+
+        all_updates = self._backfill_statuses_from_gmail(all_updates, base_query=query)
+        all_updates = self._backfill_missing_companies_from_gmail(all_updates, base_query=query)
+        all_updates = self._backfill_missing_roles_from_gmail(all_updates, base_query=query)
+        run_state["all_updates"] = all_updates
+
+        console.print(f"  Upserting [green]{len(all_updates)}[/green] records …")
+        self.sheets.upsert_many(all_updates)
+
+        processed_label_name = self.processing_labels.get_stage_label_name("processed")
+        processing_label_ids_by_name = self.gmail.ensure_processing_labels(self.processing_labels)
+        finalized_message_ids = deduplicate_preserving_order(cast(list[str], run_state.get("handled_message_ids", [])))
+        state_retention_days = max(30, int(run_state.get("state_retention_days", 30)))
+        processed_message_state_snapshot = self.processed_message_state.load(
+            retention_days=state_retention_days
+        )
+
+        state_update_error: Optional[TrackerError] = None
+        try:
+            processed_message_state_snapshot = self.processed_message_state.record_processed_message_ids(
+                existing_snapshot=processed_message_state_snapshot,
+                message_ids=finalized_message_ids,
+                retention_days=state_retention_days,
+            )
+        except TrackerError as error:
+            state_update_error = error
+
+        label_update_error: Optional[TrackerError] = None
+        try:
+            self.gmail.apply_labels_to_messages(
+                message_ids=finalized_message_ids,
+                label_ids=[
+                    label_id
+                    for label_id in [
+                        processing_label_ids_by_name.get(self.processing_labels.root_label_name),
+                        processing_label_ids_by_name.get(processed_label_name),
+                    ]
+                    if label_id
+                ],
+            )
+        except TrackerError as error:
+            label_update_error = error
+
+        if state_update_error or label_update_error:
+            error_messages = [
+                str(error)
+                for error in [state_update_error, label_update_error]
+                if error is not None
+            ]
+            raise TrackerError(
+                "Sync upserted Sheets successfully, but failed to finalize processed-message state:\n"
+                + "\n".join(f"- {message}" for message in error_messages)
+            )
+
+        self._delete_grouping_run_state(str(run_state.get("run_id", "") or "").strip())
+        console.print("[bold green]  OK Sync complete[/bold green]")
+        console.print(
+            f"  Sheet: [link={self.sheets.get_spreadsheet_url()}]{self.sheets.get_spreadsheet_url()}[/link]"
+        )
+
+    def resume_grouping_run(self, run_id: str) -> None:
+        saved_run_state = self._load_grouping_run_state(run_id)
+        console.rule("[bold blue]Resuming Saved Sync")
+        console.print(f"  Saved run: [cyan]{run_id}[/cyan]")
+        self._execute_grouping_run(saved_run_state)
+        self._finalize_completed_sync_run(saved_run_state)
+        if bool(saved_run_state.get("continue_to_digest")):
+            self._run_digest_after_sync()
 
     @staticmethod
     def _missing_email_policy_field(action_type: str) -> str:
@@ -8117,7 +8740,7 @@ class Tracker:
         )
 
     # ── sync ──────────────────────────────────────────────────────────────────
-    def sync(self):
+    def sync(self, continue_to_digest: bool = False):
         """
         Sync Gmail messages into the Google Sheet and group them into application records.
 
@@ -8129,13 +8752,12 @@ class Tracker:
 
         Edge cases:
         - Already-seen email IDs are skipped before AI processing.
-        - Gemini rate-limit responses trigger bounded retries when the wait is short.
-        - Daily quota exhaustion stops further AI grouping to avoid repeated failing calls,
-          while still upserting any batches that were processed successfully.
+        - AI grouping failures save a resumable local run-state snapshot and abort before
+          Sheets or digest actions can observe stale application state.
 
         Atomicity / concurrency:
-        - Single-process sync flow. Each successful Sheets upsert writes the current batch of
-          derived application records without cross-process locking.
+        - Single-process sync flow. AI grouping writes local run-state checkpoints between
+          clusters, but Sheets are only updated after the full run completes successfully.
         """
         console.rule("[bold blue]Syncing Gmail → Sheets")
         gcfg    = self.cfg["gmail"]
@@ -8176,7 +8798,7 @@ class Tracker:
             set(processed_message_state_snapshot.processed_at_by_message_id)
             | existing_sheet_message_ids
         )
-        processing_label_ids_by_name = self.gmail.ensure_processing_labels(self.processing_labels)
+        self.gmail.ensure_processing_labels(self.processing_labels)
 
         filtered_query = f"({query}) -label:{processed_label_query_name}"
         console.print(f"  Query: [cyan]{query}[/cyan]  |  Lookback: [cyan]{lookback}d[/cyan]")
@@ -8204,187 +8826,59 @@ class Tracker:
             console.print(f"  Sheet: [link={self.sheets.get_spreadsheet_url()}]{self.sheets.get_spreadsheet_url()}[/link]")
             return
 
-        configured_batch_size = gemini_config.get(
+        configured_transport_window_size = gemini_config.get(
             "grouping_batch_size",
             DEFAULT_AI_GROUPING_BATCH_SIZE,
         )
-        configured_max_rate_limit_wait_seconds = gemini_config.get(
-            "rate_limit_max_wait_seconds",
-            DEFAULT_AI_RATE_LIMIT_MAX_WAIT_SECONDS,
+        configured_cluster_size_limit = gemini_config.get(
+            "grouping_cluster_size",
+            DEFAULT_AI_GROUPING_CLUSTER_SIZE,
         )
-        configured_max_rate_limit_retries_per_batch = gemini_config.get(
-            "rate_limit_max_retries_per_batch",
-            DEFAULT_AI_RATE_LIMIT_MAX_RETRIES_PER_BATCH,
+        configured_cluster_emergency_margin = gemini_config.get(
+            "grouping_cluster_emergency_margin",
+            DEFAULT_AI_GROUPING_CLUSTER_EMERGENCY_MARGIN,
         )
-        batch_size = max(1, int(configured_batch_size))
-        max_rate_limit_wait_seconds = max(1, int(configured_max_rate_limit_wait_seconds))
-        max_rate_limit_retries_per_batch = max(
-            0,
-            int(configured_max_rate_limit_retries_per_batch),
+        transport_window_size = max(1, int(configured_transport_window_size))
+        cluster_size_limit = max(1, int(configured_cluster_size_limit))
+        cluster_emergency_margin = max(0, int(configured_cluster_emergency_margin))
+        clusters = self._build_grouping_clusters(
+            new_emails=new_emails,
+            existing_apps=existing,
+            transport_window_size=transport_window_size,
+            cluster_size_limit=cluster_size_limit,
+            cluster_emergency_margin=cluster_emergency_margin,
         )
-        all_updates: list[ApplicationRecord] = []
-        working_existing = list(existing)
-        existing_appl_ids = {app.get("appl_id", "") for app in existing if app.get("appl_id")}
-        total_batch_count = -(-len(new_emails) // batch_size)
-        stopped_due_to_gemini_quota = False
-        ignored_email_count = 0
-        handled_message_ids: list[str] = []
-        matched_existing_email_count = 0
-        new_application_email_count = 0
-        updated_existing_application_ids: set[str] = set()
-        created_application_ids: set[str] = set()
-
-        for i in range(0, len(new_emails), batch_size):
-            batch = new_emails[i : i + batch_size]
-            batch_number = i // batch_size + 1
-            console.print(f"  AI grouping batch {batch_number} / {total_batch_count} …")
-
-            grouping_result = EmailGroupingResult(
-                updates=[],
-                ignored_email_count=0,
-                handled_message_ids=[],
-                matched_existing_email_count=0,
-                new_application_email_count=0,
-                updated_existing_application_count=0,
-                created_application_count=0,
-            )
-            for retry_attempt in range(max_rate_limit_retries_per_batch + 1):
-                try:
-                    grouping_result = self.ai.group_emails(batch, working_existing)
-                    break
-                except GeminiRateLimitError as error:
-                    retry_delay_seconds = error.retry_delay_seconds or max_rate_limit_wait_seconds
-                    if error.is_daily_quota_exhausted:
-                        console.print(
-                            "[yellow]  Gemini daily quota exhausted. "
-                            "Stopping AI grouping for remaining batches.[/yellow]"
-                        )
-                        stopped_due_to_gemini_quota = True
-                        break
-
-                    if retry_attempt >= max_rate_limit_retries_per_batch:
-                        console.print(
-                            f"[red]  AI grouper error — skipping batch after "
-                            f"{max_rate_limit_retries_per_batch + 1} attempts: {error}[/red]"
-                        )
-                        break
-
-                    if retry_delay_seconds > max_rate_limit_wait_seconds:
-                        console.print(
-                            "[yellow]  Gemini requested a long retry wait "
-                            f"({retry_delay_seconds}s). Stopping AI grouping for remaining batches.[/yellow]"
-                        )
-                        stopped_due_to_gemini_quota = True
-                        break
-
-                    console.print(
-                        f"[yellow]  Gemini rate limited this batch. Waiting "
-                        f"{retry_delay_seconds}s before retry {retry_attempt + 2} "
-                        f"of {max_rate_limit_retries_per_batch + 1}.[/yellow]"
-                    )
-                    time.sleep(retry_delay_seconds)
-                except Exception as error:
-                    console.print(f"[red]  AI grouper error — skipping batch: {error}[/red]")
-                    break
-
-            if stopped_due_to_gemini_quota:
-                break
-
-            ignored_email_count += grouping_result.ignored_email_count
-            handled_message_ids.extend(grouping_result.handled_message_ids)
-            matched_existing_email_count += grouping_result.matched_existing_email_count
-            new_application_email_count += grouping_result.new_application_email_count
-            for update in grouping_result.updates:
-                appl_id = update.get("appl_id", "")
-                if not appl_id:
-                    continue
-                if appl_id in existing_appl_ids:
-                    updated_existing_application_ids.add(appl_id)
-                else:
-                    created_application_ids.add(appl_id)
-            all_updates.extend(grouping_result.updates)
-            for u in grouping_result.updates:
-                idx = next((j for j, a in enumerate(working_existing)
-                            if a.get("appl_id") == u["appl_id"]), None)
-                if idx is not None:
-                    working_existing[idx] = u
-                else:
-                    working_existing.append(u)
-
-        if stopped_due_to_gemini_quota:
-            console.print(
-                "[yellow]  AI grouping stopped early because Gemini quota was exhausted. "
-                "Rerun sync after quota resets or increase Gemini limits.[/yellow]"
-            )
-        relevant_email_count = matched_existing_email_count + new_application_email_count
-        unique_updated_appl_ids = {update["appl_id"] for update in all_updates if update.get("appl_id")}
-        merged_email_count = max(0, relevant_email_count - len(unique_updated_appl_ids))
-        console.print(
-            "  Grouping summary: "
-            f"[green]{relevant_email_count}[/green] relevant emails, "
-            f"[green]{ignored_email_count}[/green] ignored"
-        )
-        console.print(
-            "  Application impact: "
-            f"[green]{len(updated_existing_application_ids)}[/green] existing applications updated, "
-            f"[green]{len(created_application_ids)}[/green] new applications created, "
-            f"[green]{merged_email_count}[/green] emails merged into shared records"
-        )
-        all_updates = self._backfill_statuses_from_gmail(
-            all_updates,
-            base_query=str(query or ""),
-        )
-        all_updates = self._backfill_missing_companies_from_gmail(
-            all_updates,
-            base_query=str(query or ""),
-        )
-        all_updates = self._backfill_missing_roles_from_gmail(
-            all_updates,
-            base_query=str(query or ""),
-        )
-        console.print(f"  Upserting [green]{len(all_updates)}[/green] records …")
-        self.sheets.upsert_many(all_updates)
-
-        finalized_message_ids = deduplicate_preserving_order(handled_message_ids)
-        state_update_error: Optional[TrackerError] = None
-        try:
-            processed_message_state_snapshot = self.processed_message_state.record_processed_message_ids(
-                existing_snapshot=processed_message_state_snapshot,
-                message_ids=finalized_message_ids,
-                retention_days=state_retention_days,
-            )
-        except TrackerError as error:
-            state_update_error = error
-
-        label_update_error: Optional[TrackerError] = None
-        try:
-            self.gmail.apply_labels_to_messages(
-                message_ids=finalized_message_ids,
-                label_ids=[
-                    label_id
-                    for label_id in [
-                        processing_label_ids_by_name.get(self.processing_labels.root_label_name),
-                        processing_label_ids_by_name.get(processed_label_name),
-                    ]
-                    if label_id
-                ],
-            )
-        except TrackerError as error:
-            label_update_error = error
-
-        if state_update_error or label_update_error:
-            error_messages = [
-                str(error)
-                for error in [state_update_error, label_update_error]
-                if error is not None
-            ]
-            raise TrackerError(
-                "Sync upserted Sheets successfully, but failed to finalize processed-message state:\n"
-                + "\n".join(f"- {message}" for message in error_messages)
-            )
-
-        console.print("[bold green]  OK Sync complete[/bold green]")
-        console.print(f"  Sheet: [link={self.sheets.get_spreadsheet_url()}]{self.sheets.get_spreadsheet_url()}[/link]")
+        run_state: JsonObject = {
+            "schema_version": 1,
+            "run_id": self._new_grouping_run_id(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "continue_to_digest": bool(continue_to_digest),
+            "query": str(query or ""),
+            "lookback_days": int(lookback),
+            "state_retention_days": state_retention_days,
+            "transport_window_size": transport_window_size,
+            "cluster_size_limit": cluster_size_limit,
+            "cluster_emergency_margin": cluster_emergency_margin,
+            "existing_apps": copy.deepcopy(existing),
+            "initial_existing_appl_ids": sorted({
+                str(app.get("appl_id", "") or "").strip()
+                for app in existing
+                if str(app.get("appl_id", "") or "").strip()
+            }),
+            "working_existing": copy.deepcopy(existing),
+            "new_emails": copy.deepcopy(new_emails),
+            "clusters": clusters,
+            "all_updates": [],
+            "ignored_email_count": 0,
+            "handled_message_ids": [],
+            "matched_existing_email_count": 0,
+            "new_application_email_count": 0,
+            "updated_existing_application_ids": [],
+            "created_application_ids": [],
+        }
+        self._save_grouping_run_state(run_state)
+        self._execute_grouping_run(run_state)
+        self._finalize_completed_sync_run(run_state)
 
     def full_reset(self, skip_confirmation: bool = False) -> None:
         """
@@ -9307,8 +9801,7 @@ class Tracker:
         )
 
     # ── digest ────────────────────────────────────────────────────────────────
-    def digest(self):
-        self.sync()
+    def _run_digest_after_sync(self) -> None:
         console.rule("[bold blue]Daily Digest")
 
         self._delete_pending_gmail_drafts()
@@ -9445,6 +9938,10 @@ class Tracker:
             "\n  [dim]Drafts created in Gmail · pending_actions.json saved[/dim]\n"
             "  Run [bold cyan]python tracker.py --confirm[/bold cyan] to review and send."
         )
+
+    def digest(self):
+        self.sync(continue_to_digest=True)
+        self._run_digest_after_sync()
 
     # ── confirm ───────────────────────────────────────────────────────────────
     def confirm(self):
@@ -9733,6 +10230,7 @@ def main():
     g.add_argument("--resync-all",    action="store_true", help="Delete all email-backed application rows, clear their processed state, and sync them again")
     g.add_argument("--full-reset",    action="store_true", help="Destructively clear tracker state and rebuild from Gmail")
     g.add_argument("--debug-gmail-labels", action="store_true", help="Print Gmail user labels returned by the Gmail API")
+    g.add_argument("--resume-run",    metavar="RUN_ID", help="Resume a saved AI grouping run from state/grouping_runs")
     p.add_argument("--yes", action="store_true", help="Skip confirmation prompts for destructive commands")
     args = p.parse_args()
 
@@ -9762,6 +10260,8 @@ def main():
             t.full_reset(skip_confirmation=args.yes)
         elif args.debug_gmail_labels:
             t.debug_gmail_labels()
+        elif args.resume_run:
+            t.resume_grouping_run(args.resume_run)
     except TrackerError as error:
         fail_with_message(str(error))
     except KeyboardInterrupt:
