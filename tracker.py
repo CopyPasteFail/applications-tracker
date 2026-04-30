@@ -67,6 +67,7 @@ GmailMessage: TypeAlias = dict[str, Any]
 PendingActionRecord: TypeAlias = dict[str, Any]
 JsonObject: TypeAlias = dict[str, Any]
 ContactEmailCandidate: TypeAlias = dict[str, Any]
+ActionPolicy: TypeAlias = str
 
 OperationResultT = TypeVar("OperationResultT")
 
@@ -1846,6 +1847,64 @@ def is_truthy_sheet_value(raw_value: object) -> bool:
     """
     normalized_value = str(raw_value or "").strip().lower()
     return normalized_value in {"1", "true", "yes", "y", "skip", "opt_out", "opt-out"}
+
+
+def normalize_action_policy(raw_value: object) -> ActionPolicy:
+    """
+    Normalize per-action policy values stored in the sheet.
+
+    Blank, missing, or unrecognized values default to `enabled` so older sheets keep their
+    previous behavior until a policy is explicitly set.
+    """
+    normalized_value = str(raw_value or "").strip().lower().replace("-", "_")
+    if normalized_value in {"enabled", "disabled", "ask_when_due"}:
+        return normalized_value
+    return "enabled"
+
+
+def _has_explicit_action_policy(raw_value: object) -> bool:
+    normalized_value = str(raw_value or "").strip().lower().replace("-", "_")
+    return normalized_value in {"enabled", "disabled", "ask_when_due"}
+
+
+def get_effective_action_policy(app: ApplicationRecord, action_type: str) -> ActionPolicy:
+    """
+    Return the effective per-action policy for an application row.
+
+    Compatibility:
+    - Missing new policy fields default to `enabled`.
+    - Legacy opt-out fields still disable matching actions unless a valid new policy is set.
+    """
+    policy_field_by_action_type = {
+        "follow_up": "follow_up_policy",
+        "withdraw": "withdraw_policy",
+        "deletion_request": "deletion_request_policy",
+    }
+    policy_field = policy_field_by_action_type.get(action_type)
+    if policy_field:
+        raw_policy = app.get(policy_field, "")
+        if _has_explicit_action_policy(raw_policy):
+            return normalize_action_policy(raw_policy)
+
+    legacy_opt_out_field_by_action_type = {
+        "follow_up": "follow_up_opt_out",
+        "deletion_request": "deletion_request_opt_out",
+    }
+    legacy_opt_out_field = legacy_opt_out_field_by_action_type.get(action_type)
+    if legacy_opt_out_field and is_truthy_sheet_value(app.get(legacy_opt_out_field)):
+        return "disabled"
+
+    return "enabled"
+
+
+def action_blocks_automatic_digest(app: ApplicationRecord, action_type: str) -> bool:
+    """
+    Return True when the action should not be auto-created by the digest.
+
+    `ask_when_due` is intentionally non-automatic in this compatibility stage because there is
+    no separate pending/manual representation for an ask prompt yet.
+    """
+    return get_effective_action_policy(app, action_type) != "enabled"
 
 
 def get_application_merge_strength(
@@ -4346,6 +4405,7 @@ COLUMNS = [
     "deferred_until",
     "notes", "linkedin_contact", "email_ids", "thread_ids", "internet_message_ids",
     "gmail_review_url", "draft_id",
+    "follow_up_policy", "withdraw_policy", "deletion_request_policy",
 ]
 
 class SheetsClient:
@@ -6554,7 +6614,7 @@ class FollowUpEngine:
             if withdrawal_already_sent:
                 continue
 
-            if manual_withdraw_requested:
+            if manual_withdraw_requested and get_effective_action_policy(app, "withdraw") != "disabled":
                 actions.append({
                     "type": "withdraw",
                     "app": dict(app),
@@ -6579,12 +6639,13 @@ class FollowUpEngine:
             days = (today - ref_date).days
             app["_days"] = days  # attach for email generation
 
-            follow_up_opted_out = is_truthy_sheet_value(app.get("follow_up_opt_out"))
             deletion_request_already_sent = bool(app.get("deletion_request_sent_date"))
-            deletion_request_opted_out = is_truthy_sheet_value(app.get("deletion_request_opt_out"))
 
             if status == "Rejected":
-                if deletion_request_already_sent or deletion_request_opted_out:
+                if deletion_request_already_sent or action_blocks_automatic_digest(
+                    app,
+                    "deletion_request",
+                ):
                     continue
                 if days >= self.deletion_request_days:
                     actions.append({
@@ -6595,7 +6656,11 @@ class FollowUpEngine:
                 continue
 
             # Withdraw threshold — don't auto-withdraw if actively in Interview/Assessment
-            if days >= self.withdraw_days and status not in ("Interview", "Assessment"):
+            if (
+                days >= self.withdraw_days
+                and status not in ("Interview", "Assessment")
+                and not action_blocks_automatic_digest(app, "withdraw")
+            ):
                 actions.append({
                     "type": "withdraw",
                     "app": dict(app),
@@ -6604,7 +6669,7 @@ class FollowUpEngine:
                 continue
 
             # Follow-up threshold
-            if days >= self.follow_up_days and not follow_up_opted_out:
+            if days >= self.follow_up_days and not action_blocks_automatic_digest(app, "follow_up"):
                 # Don't re-follow-up if we already sent one recently
                 last_fu = app.get("follow_up_sent_date")
                 if last_fu:
@@ -7225,48 +7290,83 @@ class Tracker:
     def _describe_action_opt_out(raw_value: object) -> str:
         return "Disabled" if is_truthy_sheet_value(raw_value) else "Enabled"
 
+    @staticmethod
+    def _describe_action_policy(raw_value: object) -> str:
+        policy_labels = {
+            "enabled": "Enabled",
+            "disabled": "Disabled",
+            "ask_when_due": "Ask when due",
+        }
+        return policy_labels[normalize_action_policy(raw_value)]
+
     def _manage_action_opt_outs(self, app: ApplicationRecord) -> None:
-        opt_out_targets = {
-            "f": ("follow_up_opt_out", "Follow-up"),
-            "d": ("deletion_request_opt_out", "Deletion request"),
+        policy_targets = {
+            "f": ("follow_up_policy", "follow_up", "Follow-up"),
+            "w": ("withdraw_policy", "withdraw", "Withdrawal"),
+            "d": ("deletion_request_policy", "deletion_request", "Deletion request"),
         }
 
-        console.print("  Action opt-outs:")
-        for shortcut, (field_name, label) in opt_out_targets.items():
-            current_status = self._describe_action_opt_out(app.get(field_name, ""))
-            console.print(f"  [cyan]{label} ({shortcut})[/cyan] — current: [green]{current_status}[/green]")
+        console.print("  Action policies:")
+        for shortcut, (field_name, action_type, label) in policy_targets.items():
+            current_status = self._describe_action_policy(
+                get_effective_action_policy(app, action_type)
+            )
+            raw_policy = app.get(field_name, "")
+            compatibility_note = ""
+            if not _has_explicit_action_policy(raw_policy) and action_type in {
+                "follow_up",
+                "deletion_request",
+            }:
+                legacy_field = (
+                    "follow_up_opt_out"
+                    if action_type == "follow_up"
+                    else "deletion_request_opt_out"
+                )
+                if is_truthy_sheet_value(app.get(legacy_field)):
+                    compatibility_note = f" [dim](from legacy {legacy_field})[/dim]"
+            console.print(
+                f"  [cyan]{label} ({shortcut})[/cyan] — current: "
+                f"[green]{current_status}[/green]{compatibility_note}"
+            )
         selected_target = Prompt.ask(
             "  Choose action to edit",
-            choices=[*opt_out_targets.keys(), "c"],
+            choices=[*policy_targets.keys(), "c"],
             default="c",
         ).strip().lower()
         if selected_target == "c":
             console.print("  [dim]Cancelled.[/dim]")
             return
 
-        field_name, label = opt_out_targets[selected_target]
-        current_status = self._describe_action_opt_out(app.get(field_name, ""))
+        field_name, _action_type, label = policy_targets[selected_target]
+        current_status = self._describe_action_policy(
+            get_effective_action_policy(app, _action_type)
+        )
         console.print(
             f"  {label}: current behavior is [green]{current_status}[/green]"
         )
         console.print(
             f"  Set {label.lower()} drafting for this row: [cyan]enabled (e)[/cyan], "
-            "[cyan]disabled (a)[/cyan], "
+            "[cyan]disabled (a)[/cyan], [cyan]ask when due (k)[/cyan], "
             "or [cyan]cancel (c)[/cyan]"
         )
         selected_policy = Prompt.ask(
             "  New behavior",
-            choices=["e", "a", "c"],
+            choices=["e", "a", "k", "c"],
             default="c",
         ).strip().lower()
         if selected_policy == "c":
             console.print("  [dim]Cancelled.[/dim]")
             return
 
-        opt_out_value = "" if selected_policy == "e" else "yes"
-        status_label = self._describe_action_opt_out(opt_out_value)
-        self.sheets.set_field(app["appl_id"], field_name, opt_out_value)
-        app[field_name] = opt_out_value
+        policy_by_selection = {
+            "e": "enabled",
+            "a": "disabled",
+            "k": "ask_when_due",
+        }
+        policy_value = policy_by_selection[selected_policy]
+        status_label = self._describe_action_policy(policy_value)
+        self.sheets.set_field(app["appl_id"], field_name, policy_value)
+        app[field_name] = policy_value
         console.print(f"  [green]✓ {label} set to {status_label}[/green]")
 
     def _user_owned_email_addresses(self) -> set[str]:

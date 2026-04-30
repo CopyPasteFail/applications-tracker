@@ -34,6 +34,9 @@ const COL = {
   internet_message_ids: 27,
   gmail_review_url:     28,
   draft_id:             29,
+  follow_up_policy:     30,
+  withdraw_policy:      31,
+  deletion_request_policy: 32,
 };
 
 // ── Menu ──────────────────────────────────────────────────────────────────────

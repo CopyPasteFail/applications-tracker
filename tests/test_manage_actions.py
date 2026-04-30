@@ -42,50 +42,96 @@ class ManageActionTests(unittest.TestCase):
         self.assertEqual(Tracker._describe_action_opt_out(""), "Enabled")
         self.assertEqual(Tracker._describe_action_opt_out("yes"), "Disabled")
 
-    def test_manage_action_opt_outs_sets_deletion_request_flag(self) -> None:
+    def test_describe_action_policy_returns_manage_friendly_labels(self) -> None:
+        self.assertEqual(Tracker._describe_action_policy(""), "Enabled")
+        self.assertEqual(Tracker._describe_action_policy("enabled"), "Enabled")
+        self.assertEqual(Tracker._describe_action_policy("disabled"), "Disabled")
+        self.assertEqual(Tracker._describe_action_policy("ask_when_due"), "Ask when due")
+        self.assertEqual(Tracker._describe_action_policy("unexpected"), "Enabled")
+
+    def test_manage_action_opt_outs_sets_deletion_request_policy(self) -> None:
         tracker = Tracker.__new__(Tracker)
         tracker.sheets = Mock()
-        app = {"appl_id": "app-1", "deletion_request_opt_out": ""}
+        app = {"appl_id": "app-1", "deletion_request_policy": ""}
 
         with patch("tracker.console.print"), patch("tracker.Prompt.ask", side_effect=["d", "a"]):
             tracker._manage_action_opt_outs(app)
 
         tracker.sheets.set_field.assert_called_once_with(
             "app-1",
-            "deletion_request_opt_out",
-            "yes",
+            "deletion_request_policy",
+            "disabled",
         )
-        self.assertEqual(app["deletion_request_opt_out"], "yes")
+        self.assertEqual(app["deletion_request_policy"], "disabled")
 
-    def test_manage_action_opt_outs_clears_deletion_request_flag(self) -> None:
+    def test_manage_action_opt_outs_clears_deletion_request_policy(self) -> None:
         tracker = Tracker.__new__(Tracker)
         tracker.sheets = Mock()
-        app = {"appl_id": "app-1", "deletion_request_opt_out": "yes"}
+        app = {"appl_id": "app-1", "deletion_request_policy": "disabled"}
 
         with patch("tracker.console.print"), patch("tracker.Prompt.ask", side_effect=["d", "e"]):
             tracker._manage_action_opt_outs(app)
 
         tracker.sheets.set_field.assert_called_once_with(
             "app-1",
-            "deletion_request_opt_out",
-            "",
+            "deletion_request_policy",
+            "enabled",
         )
-        self.assertEqual(app["deletion_request_opt_out"], "")
+        self.assertEqual(app["deletion_request_policy"], "enabled")
 
-    def test_manage_action_opt_outs_sets_follow_up_flag(self) -> None:
+    def test_manage_action_opt_outs_sets_follow_up_policy(self) -> None:
         tracker = Tracker.__new__(Tracker)
         tracker.sheets = Mock()
-        app = {"appl_id": "app-1", "follow_up_opt_out": ""}
+        app = {"appl_id": "app-1", "follow_up_policy": ""}
 
         with patch("tracker.console.print"), patch("tracker.Prompt.ask", side_effect=["f", "a"]):
             tracker._manage_action_opt_outs(app)
 
         tracker.sheets.set_field.assert_called_once_with(
             "app-1",
-            "follow_up_opt_out",
-            "yes",
+            "follow_up_policy",
+            "disabled",
         )
-        self.assertEqual(app["follow_up_opt_out"], "yes")
+        self.assertEqual(app["follow_up_policy"], "disabled")
+
+    def test_manage_action_opt_outs_shows_effective_legacy_policy_in_detail_view(self) -> None:
+        tracker = Tracker.__new__(Tracker)
+        tracker.sheets = Mock()
+        app = {
+            "appl_id": "app-1",
+            "follow_up_policy": "",
+            "follow_up_opt_out": "yes",
+        }
+
+        with patch("tracker.console.print") as mock_print, patch(
+            "tracker.Prompt.ask",
+            side_effect=["f", "c"],
+        ):
+            tracker._manage_action_opt_outs(app)
+
+        printed_messages = [
+            str(call.args[0])
+            for call in mock_print.call_args_list
+            if call.args
+        ]
+        self.assertTrue(any("Follow-up" in message and "current: [green]Disabled" in message for message in printed_messages))
+        self.assertTrue(any("current behavior is [green]Disabled" in message for message in printed_messages))
+        tracker.sheets.set_field.assert_not_called()
+
+    def test_manage_action_opt_outs_sets_withdraw_policy_to_ask_when_due(self) -> None:
+        tracker = Tracker.__new__(Tracker)
+        tracker.sheets = Mock()
+        app = {"appl_id": "app-1", "withdraw_policy": ""}
+
+        with patch("tracker.console.print"), patch("tracker.Prompt.ask", side_effect=["w", "k"]):
+            tracker._manage_action_opt_outs(app)
+
+        tracker.sheets.set_field.assert_called_once_with(
+            "app-1",
+            "withdraw_policy",
+            "ask_when_due",
+        )
+        self.assertEqual(app["withdraw_policy"], "ask_when_due")
 
     def test_persist_resolved_contact_email_skips_privacy_actions(self) -> None:
         tracker = Tracker.__new__(Tracker)

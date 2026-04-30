@@ -309,11 +309,18 @@ Search by company or role, then choose an action:
 | `pause` or `p` | Remove from pipeline permanently until manually resumed |
 | `resume` or `r` | Clear deferral and set status back to Applied |
 | `email` or `e` | Set or fix the contact email for follow-ups and withdrawals |
-| `policy` or `o` | Control action opt-outs for this row, including suppressing follow-up or deletion-request drafting |
+| `policy` or `o` | Control per-action policies for follow-up, withdrawal, and deletion-request drafting |
 | `withdraw` or `w` | Queue a manual withdrawal for the next digest, even if the normal withdrawal threshold has not passed yet |
 | `exit` or `c` | Exit without changing the application |
 
 You can also do all of these directly in the Google Sheet, or via the **Job Tracker** menu (Apps Script — see below).
+
+Per-action policy values:
+- `enabled`: allow the normal digest automation for that action. Blank cells are treated as `enabled`.
+- `disabled`: suppress that action for this row.
+- `ask_when_due`: reserved for a future manual-review flow. In this compatibility stage it does not silently create automatic digest actions.
+
+Legacy opt-out columns are still honored for existing sheets, but explicit new policy fields take precedence.
 
 ### Add a LinkedIn application
 
@@ -364,8 +371,15 @@ If a template file is missing, Gemini generates the email body as a fallback.
 | `follow_up_count` | Number of follow-ups sent |
 | `withdrawal_sent_date` | Date withdrawal was sent |
 | `deletion_request_sent_date` | Date a privacy / GDPR deletion request was sent |
-| `follow_up_opt_out` | Set to `yes` / `true` / `1` / `skip` to suppress follow-up drafting for this row while still allowing withdrawal timing to continue |
-| `deletion_request_opt_out` | Set to `yes` / `true` / `1` / `skip` to suppress deletion-request drafting for this row |
+| `follow_up_policy` | `enabled`, `disabled`, or `ask_when_due` for follow-up drafting. Blank means `enabled` |
+| `withdraw_policy` | `enabled`, `disabled`, or `ask_when_due` for automatic withdrawal drafting. Blank means `enabled` |
+| `deletion_request_policy` | `enabled`, `disabled`, or `ask_when_due` for deletion-request drafting. Blank means `enabled` |
+| `follow_up_opt_out` | Compatibility/deprecated. Set to `yes` / `true` / `1` / `skip` to suppress follow-up drafting only when `follow_up_policy` is blank |
+| `deletion_request_opt_out` | Compatibility/deprecated. Set to `yes` / `true` / `1` / `skip` to suppress deletion-request drafting only when `deletion_request_policy` is blank |
+| `follow_up_missing_email_policy` | Missing-recipient behavior for follow-ups: blank asks every time, `skip_always` skips, `create_empty_draft` creates an empty-address draft |
+| `withdraw_missing_email_policy` | Missing-recipient behavior for withdrawals: blank asks every time, `skip_always` skips, `create_empty_draft` creates an empty-address draft |
+| `deletion_request_missing_email_policy` | Missing-recipient behavior for deletion requests: blank asks every time, `skip_always` skips, `create_empty_draft` creates an empty-address draft |
+| `withdraw_in_next_digest` | Manual one-shot withdrawal request for the next digest. Cleared after confirm/send |
 | `deferred_until` | Skip pipeline until this date (YYYY-MM-DD) |
 | `notes` | Free text - edit manually |
 | `linkedin_contact` | LinkedIn contact name |
