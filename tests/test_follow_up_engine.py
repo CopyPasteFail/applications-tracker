@@ -1,6 +1,5 @@
 import unittest
 from datetime import datetime, timezone
-from unittest.mock import patch
 
 from tracker import (
     FollowUpEngine,
@@ -25,7 +24,8 @@ class FollowUpEngineTests(unittest.TestCase):
                     "withdraw_days": 14,
                     "follow_up_repeat_days": 7,
                 }
-            }
+            },
+            today_provider=lambda: FixedDateTime.now(timezone.utc).date(),
         )
 
     def test_recent_follow_up_delays_withdrawal(self) -> None:
@@ -39,8 +39,7 @@ class FollowUpEngineTests(unittest.TestCase):
             "withdrawal_sent_date": "",
         }
 
-        with patch("tracker.datetime", FixedDateTime):
-            actions = self.engine.compute_actions([app])
+        actions = self.engine.compute_actions([app])
 
         self.assertEqual(actions, [])
 
@@ -55,8 +54,7 @@ class FollowUpEngineTests(unittest.TestCase):
             "withdrawal_sent_date": "",
         }
 
-        with patch("tracker.datetime", FixedDateTime):
-            actions = self.engine.compute_actions([app])
+        actions = self.engine.compute_actions([app])
 
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0]["type"], "withdraw")
@@ -83,8 +81,7 @@ class FollowUpEngineTests(unittest.TestCase):
             },
         ]
 
-        with patch("tracker.datetime", FixedDateTime):
-            actions = self.engine.compute_actions(apps)
+        actions = self.engine.compute_actions(apps)
 
         self.assertEqual([action["type"] for action in actions], ["follow_up", "follow_up"])
         self.assertEqual([action["app"]["appl_id"] for action in actions], ["WUR-AIP-15", "WUR-AIP-16"])
@@ -101,8 +98,7 @@ class FollowUpEngineTests(unittest.TestCase):
             "withdraw_in_next_digest": "TRUE",
         }
 
-        with patch("tracker.datetime", FixedDateTime):
-            actions = self.engine.compute_actions([app])
+        actions = self.engine.compute_actions([app])
 
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0]["type"], "withdraw")
@@ -120,8 +116,7 @@ class FollowUpEngineTests(unittest.TestCase):
             "withdraw_in_next_digest": "TRUE",
         }
 
-        with patch("tracker.datetime", FixedDateTime):
-            actions = self.engine.compute_actions([app])
+        actions = self.engine.compute_actions([app])
 
         self.assertEqual(actions, [])
 
@@ -137,8 +132,7 @@ class FollowUpEngineTests(unittest.TestCase):
             "withdrawal_sent_date": "",
         }
 
-        with patch("tracker.datetime", FixedDateTime):
-            actions = self.engine.compute_actions([app])
+        actions = self.engine.compute_actions([app])
 
         self.assertEqual(actions, [])
 
@@ -154,8 +148,7 @@ class FollowUpEngineTests(unittest.TestCase):
             "withdrawal_sent_date": "",
         }
 
-        with patch("tracker.datetime", FixedDateTime):
-            actions = self.engine.compute_actions([app])
+        actions = self.engine.compute_actions([app])
 
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0]["type"], "withdraw")
@@ -220,8 +213,7 @@ class FollowUpEngineTests(unittest.TestCase):
             "withdrawal_sent_date": "",
         }
 
-        with patch("tracker.datetime", FixedDateTime):
-            actions = self.engine.compute_actions([follow_up_due_app, withdraw_due_app])
+        actions = self.engine.compute_actions([follow_up_due_app, withdraw_due_app])
 
         self.assertEqual([action["type"] for action in actions], ["withdraw"])
         self.assertEqual(actions[0]["app"]["appl_id"], "WUR-AIP-7")
@@ -248,8 +240,7 @@ class FollowUpEngineTests(unittest.TestCase):
             "withdrawal_sent_date": "",
         }
 
-        with patch("tracker.datetime", FixedDateTime):
-            actions = self.engine.compute_actions([follow_up_due_app, withdraw_due_app])
+        actions = self.engine.compute_actions([follow_up_due_app, withdraw_due_app])
 
         self.assertEqual([action["type"] for action in actions], ["follow_up", "follow_up"])
         self.assertEqual(actions[0]["app"]["appl_id"], "WUR-AIP-8")
@@ -268,8 +259,7 @@ class FollowUpEngineTests(unittest.TestCase):
             "deletion_request_sent_date": "",
         }
 
-        with patch("tracker.datetime", FixedDateTime):
-            actions = self.engine.compute_actions([app])
+        actions = self.engine.compute_actions([app])
 
         self.assertEqual(actions, [])
 
@@ -309,8 +299,7 @@ class FollowUpEngineTests(unittest.TestCase):
             },
         ]
 
-        with patch("tracker.datetime", FixedDateTime):
-            actions = self.engine.compute_actions(apps)
+        actions = self.engine.compute_actions(apps)
 
         self.assertEqual(actions, [])
 
@@ -327,8 +316,7 @@ class FollowUpEngineTests(unittest.TestCase):
             "deletion_request_sent_date": "",
         }
 
-        with patch("tracker.datetime", FixedDateTime):
-            actions = self.engine.compute_actions([app])
+        actions = self.engine.compute_actions([app])
 
         self.assertEqual(actions, [])
 
