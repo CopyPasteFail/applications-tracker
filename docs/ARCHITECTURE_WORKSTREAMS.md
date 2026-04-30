@@ -29,6 +29,7 @@ The following commits already landed the architectural foundation and action-pla
 - `cabc9ed` - Extract action planning module
 - `000995c` - Document helper boundary audit
 - `3091b00` - Label action helper sections
+- `94db694` - Pin ask-when-due policy boundary
 
 Collectively, these commits:
 
@@ -39,11 +40,18 @@ Collectively, these commits:
 - added per-action policy helpers, including compatibility with legacy opt-out columns
 - moved `FollowUpEngine` and pure action-planning helpers into `tracker_actions.py` while preserving user-facing behavior and backward-compatible imports from `tracker.py`
 
+Ask_when_due audit/test decision:
+
+- `ask_when_due` remains non-automatic today and still blocks automatic digest draft creation
+- explicit `ask_when_due` policy precedence over legacy opt-out fields is now pinned by tests
+- the manage UI can set `ask_when_due` for follow-up and deletion-request, with existing withdrawal coverage already in place
+- no manual-review queue representation or runtime behavior has been added yet
+
 ## Recommended Next Workstream
 
 ### Open Next Workstream
 
-The helper-boundary work is complete for now. The next session should inspect the repo docs and code, then choose a new bounded workstream only if the current state clearly supports one. Do not assume a helper split is the next step; the current decision is to keep the helpers together.
+The helper-boundary audit is complete for now. The next bounded candidate is to design the smallest safe manual-review representation for `ask_when_due` due actions. Do not implement that runtime path until the queue/storage/send-time contract is explicit.
 
 ## Proposed Target Extraction
 
@@ -63,12 +71,13 @@ The helper-boundary work is complete for now. The next session should inspect th
 - Do not remove legacy opt-out compatibility yet.
 - Do not start a broad package restructure.
 - Do not move Gmail, Sheets, draft creation, template rendering, or contact discovery code.
+- Do not add manual-review runtime behavior before the queue/storage/send-time contract is explicit.
 
 ## Suggested First Implementation Slice
 
-1. Read `tracker_actions.py` and list the helpers that are status/lifecycle/policy-specific rather than action-planning-specific.
-2. Decide whether a focused helper module would materially improve clarity; if not, leave the code as-is and update this doc with that decision.
-3. If moving code, move only pure helpers first and keep imports backward-compatible from `tracker.py`.
+1. Define the smallest safe manual-review representation for `ask_when_due` due actions.
+2. Specify the queue/storage/send-time contract before any runtime implementation.
+3. Keep the existing `ask_when_due` automatic-draft boundary intact until that contract is explicit.
 4. Run targeted tests before broader validation.
 
 ### Audit decision at 77e7386
@@ -98,4 +107,4 @@ Next recommended stage: minor doc/comment cleanup only, unless a later pass find
 
 Paste this into a future ChatGPT/Codex session:
 
-> Continue the applications-tracker architecture work after `3091b00`, which labeled the helper sections in `tracker_actions.py`. The helper-boundary audit is complete, no helper module split is currently justified, and `tracker_actions.py` section comments were added to make the boundary easier to read. The next session should inspect the repo docs and code before choosing a new bounded workstream. Be conservative: do not change Sheet statuses, do not add `lifecycle_status` or `latest_signal` columns, do not alter the Gemini extraction schema, do not change `sync`, `digest`, or `daily` behavior, do not move Gmail/Sheets IO, draft creation, template rendering, contact discovery, or CLI orchestration out of `tracker.py`, and keep all existing non-goals. If a future split is ever considered, it must be justified by the repo state rather than assumed up front.
+> Continue the applications-tracker architecture work after `94db694`, which pinned the ask_when_due policy boundary. The helper-boundary audit is complete, the ask_when_due policy boundary is pinned by tests, and current behavior is still "ask_when_due blocks automatic drafts". The next session should decide the smallest safe manual-review queue/storage contract before any runtime implementation. Be conservative: do not change Sheet statuses, do not add `lifecycle_status` or `latest_signal` columns, do not alter the Gemini extraction schema, do not change `sync`, `digest`, or `daily` behavior, do not move Gmail/Sheets IO, draft creation, template rendering, contact discovery, or CLI orchestration out of `tracker.py`, and keep all existing non-goals. If a future split is ever considered, it must be justified by the repo state rather than assumed up front.
