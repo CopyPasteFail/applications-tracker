@@ -19,7 +19,7 @@ Usage:
   python tracker.py --resume-run ID   # resume a saved AI grouping run after a fail-closed abort
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 import json
 import uuid
