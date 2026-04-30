@@ -147,6 +147,47 @@ LINKEDIN_NOISE_COMPANY_NAME_HINTS = {
 STATUS_RANK = {s: i for i, s in enumerate(
     ["Applied", "Screening", "Interview", "Assessment", "Offer", "Rejected", "Withdrawn", "Ghosted"]
 )}
+DEFAULT_APPLICATION_STATUS = "Applied"
+PIPELINE_BLOCKING_APPLICATION_STATUSES = {"Offer", "Withdrawn", "Paused"}
+TERMINAL_APPLICATION_STATUSES = {"Rejected", "Withdrawn", "Offer", "Ghosted"}
+AUTO_WITHDRAW_BLOCKING_APPLICATION_STATUSES = {"Interview", "Assessment"}
+DEFERRED_UNTIL_CLEARING_APPLICATION_STATUSES = {"Rejected"}
+
+
+def normalize_application_status(raw_status: Any) -> str:
+    """Return the canonical current status string used by compatibility-stage rules."""
+    status = str(raw_status or "").strip()
+    return status or DEFAULT_APPLICATION_STATUS
+
+
+def status_rank(status: Any) -> int:
+    """Return the current advancement rank, defaulting unknown statuses to Applied behavior."""
+    return STATUS_RANK.get(normalize_application_status(status), STATUS_RANK[DEFAULT_APPLICATION_STATUS])
+
+
+def is_terminal_application_status(status: Any) -> bool:
+    """Return whether a status is treated as a completed outcome for status backfill."""
+    return normalize_application_status(status) in TERMINAL_APPLICATION_STATUSES
+
+
+def is_paused_application_status(status: Any) -> bool:
+    """Return whether a status represents a manually paused application."""
+    return normalize_application_status(status) == "Paused"
+
+
+def status_blocks_pipeline_actions(status: Any) -> bool:
+    """Return whether normal digest pipeline actions should be skipped for this status."""
+    return normalize_application_status(status) in PIPELINE_BLOCKING_APPLICATION_STATUSES
+
+
+def status_blocks_auto_withdraw(status: Any) -> bool:
+    """Return whether automatic ghosted withdrawal should be skipped for this status."""
+    return normalize_application_status(status) in AUTO_WITHDRAW_BLOCKING_APPLICATION_STATUSES
+
+
+def should_clear_deferred_until_for_status(status: Any) -> bool:
+    """Return whether applying this status should clear a stored deferral."""
+    return normalize_application_status(status) in DEFERRED_UNTIL_CLEARING_APPLICATION_STATUSES
 
 SHEETS_WRITE_CHUNK_SIZE = 200
 SHEETS_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -2869,9 +2910,9 @@ def merge_application_records(
         if not merged_app.get(field_name) and secondary_app.get(field_name):
             merged_app[field_name] = secondary_app[field_name]
 
-    primary_status = primary_app.get("status", "Applied")
-    secondary_status = secondary_app.get("status", "Applied")
-    if STATUS_RANK.get(secondary_status, 0) > STATUS_RANK.get(primary_status, 0):
+    primary_status = normalize_application_status(primary_app.get("status"))
+    secondary_status = normalize_application_status(secondary_app.get("status"))
+    if status_rank(secondary_status) > status_rank(primary_status):
         merged_app["status"] = secondary_status
 
     candidate_applied_dates = [
@@ -6103,7 +6144,7 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
                 extracted_status = ai_extracted_status or deterministic_status or "Applied"
                 if (
                     deterministic_status
-                    and STATUS_RANK.get(deterministic_status, 0) > STATUS_RANK.get(extracted_status, 0)
+                    and status_rank(deterministic_status) > status_rank(extracted_status)
                 ):
                     extracted_status = deterministic_status
             extracted_applied_date = (
@@ -6196,9 +6237,9 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
                 updated_existing_application_ids.add(aid)
                 # Advance status only, never go backwards
                 new_st = extracted_status
-                if new_st and STATUS_RANK.get(new_st, 0) > STATUS_RANK.get(base.get("status", "Applied"), 0):
-                    base["status"] = new_st
-                if extracted_status == "Rejected":
+                if new_st and status_rank(new_st) > status_rank(base.get("status")):
+                    base["status"] = normalize_application_status(new_st)
+                if should_clear_deferred_until_for_status(extracted_status):
                     base["deferred_until"] = ""
                 extracted_role_title = extracted_role_name
                 preferred_role_title = choose_preferred_role_title(
@@ -6605,10 +6646,10 @@ class FollowUpEngine:
         actions: list[PendingActionRecord] = []
 
         for app in applications:
-            status = app.get("status", "Applied")
+            status = normalize_application_status(app.get("status"))
             manual_withdraw_requested = is_truthy_sheet_value(app.get("withdraw_in_next_digest"))
 
-            if status in ("Offer", "Withdrawn", "Paused"):
+            if status_blocks_pipeline_actions(status):
                 continue
 
             withdrawal_already_sent = bool(app.get("withdrawal_sent_date"))
@@ -6659,7 +6700,7 @@ class FollowUpEngine:
             # Withdraw threshold — don't auto-withdraw if actively in Interview/Assessment
             if (
                 days >= self.withdraw_days
-                and status not in ("Interview", "Assessment")
+                and not status_blocks_auto_withdraw(status)
                 and not action_blocks_automatic_digest(app, "withdraw")
             ):
                 actions.append({
@@ -8550,12 +8591,12 @@ class Tracker:
             base_query=base_query,
         )
 
-        strongest_status = str(application_row.get("status", "Applied") or "Applied")
+        strongest_status = normalize_application_status(application_row.get("status"))
         for related_message in related_messages:
             candidate_status = extract_status_from_email_message(related_message)
-            if candidate_status and STATUS_RANK.get(candidate_status, 0) > STATUS_RANK.get(strongest_status, 0):
-                strongest_status = candidate_status
-        return strongest_status if strongest_status != str(application_row.get("status", "Applied") or "Applied") else ""
+            if candidate_status and status_rank(candidate_status) > status_rank(strongest_status):
+                strongest_status = normalize_application_status(candidate_status)
+        return strongest_status if strongest_status != normalize_application_status(application_row.get("status")) else ""
 
     def _backfill_statuses_from_gmail(
         self,
@@ -8582,13 +8623,12 @@ class Tracker:
         """
         enriched_application_rows: list[ApplicationRecord] = []
         recovered_status_count = 0
-        terminal_statuses = {"Rejected", "Withdrawn", "Offer", "Ghosted"}
 
         for application_row in application_rows:
             normalized_application_row = dict(application_row)
             application_source = str(normalized_application_row.get("source", "") or "").strip().lower()
-            current_status = str(normalized_application_row.get("status", "Applied") or "Applied")
-            if application_source != "email" or current_status in terminal_statuses:
+            current_status = normalize_application_status(normalized_application_row.get("status"))
+            if application_source != "email" or is_terminal_application_status(current_status):
                 enriched_application_rows.append(normalized_application_row)
                 continue
 
@@ -8605,8 +8645,8 @@ class Tracker:
                 enriched_application_rows.append(normalized_application_row)
                 continue
 
-            if recovered_status and STATUS_RANK.get(recovered_status, 0) > STATUS_RANK.get(current_status, 0):
-                normalized_application_row["status"] = recovered_status
+            if recovered_status and status_rank(recovered_status) > status_rank(current_status):
+                normalized_application_row["status"] = normalize_application_status(recovered_status)
                 recovered_status_count += 1
             enriched_application_rows.append(normalized_application_row)
 
@@ -10166,7 +10206,7 @@ class Tracker:
         ] if query else apps
 
         # Filter out already-terminal unless user wants them
-        active = [a for a in matches if a.get("status") not in ("Withdrawn",)]
+        active = [a for a in matches if normalize_application_status(a.get("status")) != "Withdrawn"]
         if not active:
             console.print("[yellow]No matching applications.[/yellow]")
             return

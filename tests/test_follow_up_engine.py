@@ -61,6 +61,34 @@ class FollowUpEngineTests(unittest.TestCase):
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0]["type"], "withdraw")
 
+    def test_interview_and_assessment_do_not_auto_withdraw_at_threshold(self) -> None:
+        apps = [
+            {
+                "appl_id": "WUR-AIP-15",
+                "status": "Interview",
+                "applied_date": "2026-03-01",
+                "last_activity_date": "2026-03-01",
+                "follow_up_sent_date": "",
+                "follow_up_count": "0",
+                "withdrawal_sent_date": "",
+            },
+            {
+                "appl_id": "WUR-AIP-16",
+                "status": "Assessment",
+                "applied_date": "2026-03-01",
+                "last_activity_date": "2026-03-01",
+                "follow_up_sent_date": "",
+                "follow_up_count": "0",
+                "withdrawal_sent_date": "",
+            },
+        ]
+
+        with patch("tracker.datetime", FixedDateTime):
+            actions = self.engine.compute_actions(apps)
+
+        self.assertEqual([action["type"] for action in actions], ["follow_up", "follow_up"])
+        self.assertEqual([action["app"]["appl_id"] for action in actions], ["WUR-AIP-15", "WUR-AIP-16"])
+
     def test_manual_withdraw_flag_queues_withdrawal_before_threshold(self) -> None:
         app = {
             "appl_id": "WUR-AIP-2",
