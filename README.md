@@ -432,4 +432,4 @@ Select any row, then use the menu to defer, pause, resume, set a contact email, 
 
 ## Development Notes
 
-- [Architecture workstreams and handoff plan](docs/ARCHITECTURE_WORKSTREAMS.md)
+- [Architecture](docs/ARCHITECTURE.md)
