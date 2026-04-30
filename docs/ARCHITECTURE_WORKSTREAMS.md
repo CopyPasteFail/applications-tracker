@@ -69,6 +69,21 @@ This is the next recommended slice because action planning has already been extr
 3. If moving code, move only pure helpers first and keep imports backward-compatible from `tracker.py`.
 4. Run targeted tests before broader validation.
 
+### Audit decision at 77e7386
+
+Helper classification in `tracker_actions.py`:
+
+- Status / lifecycle helpers: `normalize_application_status`, `status_rank`, `application_lifecycle_from_status`, `application_progress_signal_from_status`, `is_active_application_lifecycle`, `is_terminal_application_status`, `is_paused_application_status`, `status_blocks_pipeline_actions`, `status_blocks_auto_withdraw`, `should_clear_deferred_until_for_status`
+- Policy helpers: `normalize_action_policy`, `_has_explicit_action_policy`, `get_effective_action_policy`, `action_blocks_automatic_digest`
+- Generic date / sheet-value helpers: `parse_iso_date`, `is_truthy_sheet_value`, `_default_today_utc`
+- Action-planning / `FollowUpEngine` logic: `FollowUpEngine`, including `_get_withdraw_reference_date` and `compute_actions`
+
+Decision: no code split yet.
+
+Rationale: the helper clusters are still small, pure, and directly support `FollowUpEngine`, so `tracker_actions.py` remains readable enough for this stage. The current `tracker.py` imports and test coverage also show the compatibility boundary is still stable, so a module split would be premature.
+
+Next recommended stage: minor doc/comment cleanup only, unless a later pass finds a genuinely confusing compatibility import boundary that can be tightened with a very small import-only cleanup.
+
 ## Validation Checklist
 
 - Targeted tests for action planning, status, lifecycle, and policy helpers.
