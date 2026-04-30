@@ -15,7 +15,7 @@ This document is a repo-local continuation note for future ChatGPT/Codex session
   - `--sync` runs Gmail ingestion only
   - `--digest` computes actions and creates drafts without syncing
   - `--daily` runs sync first, then computes actions and creates drafts
-- The current validated state was clean after `cabc9ed`, with full pytest, ruff, `git diff --check`, and CLI help passing.
+- The current validated state is clean at `3091b00`, after the helper-boundary audit and section-label cleanup landed, with full pytest, ruff, `git diff --check`, and CLI help passing.
 
 ## Completed Workstream Summary
 
@@ -27,6 +27,8 @@ The following commits already landed the architectural foundation and action-pla
 - `c0558af` - Add explicit daily digest command
 - `c28fabb` - Add per-action application policies
 - `cabc9ed` - Extract action planning module
+- `000995c` - Document helper boundary audit
+- `3091b00` - Label action helper sections
 
 Collectively, these commits:
 
@@ -39,9 +41,9 @@ Collectively, these commits:
 
 ## Recommended Next Workstream
 
-### Clarify status, lifecycle, and policy helper boundaries
+### Open Next Workstream
 
-This is the next recommended slice because action planning has already been extracted, and the remaining low-risk architecture improvement is to make the status/lifecycle/policy helper boundary easier to understand without changing behavior. Keep this narrow: only split or rename helpers if the current `tracker_actions.py` grouping is becoming unclear.
+The helper-boundary work is complete for now. The next session should inspect the repo docs and code, then choose a new bounded workstream only if the current state clearly supports one. Do not assume a helper split is the next step; the current decision is to keep the helpers together.
 
 ## Proposed Target Extraction
 
@@ -96,4 +98,4 @@ Next recommended stage: minor doc/comment cleanup only, unless a later pass find
 
 Paste this into a future ChatGPT/Codex session:
 
-> Continue the applications-tracker architecture work after `cabc9ed`, which extracted action planning into `tracker_actions.py`. The safest next slice is to clarify whether status, lifecycle, and policy helpers should remain in `tracker_actions.py` or move to a focused pure-helper module such as `tracker_status.py` or `tracker_policy.py`. Be conservative: do not change Sheet statuses, do not add `lifecycle_status` or `latest_signal` columns, do not alter the Gemini extraction schema, do not change `sync`, `digest`, or `daily` behavior, and do not move Gmail/Sheets IO, draft creation, template rendering, contact discovery, or CLI orchestration out of `tracker.py`. If no split clearly improves readability, leave the code as-is and update the handoff doc with that decision. Validate with targeted helper tests, full pytest, ruff, `git diff --check`, and CLI help sanity if code changes are made.
+> Continue the applications-tracker architecture work after `3091b00`, which labeled the helper sections in `tracker_actions.py`. The helper-boundary audit is complete, no helper module split is currently justified, and `tracker_actions.py` section comments were added to make the boundary easier to read. The next session should inspect the repo docs and code before choosing a new bounded workstream. Be conservative: do not change Sheet statuses, do not add `lifecycle_status` or `latest_signal` columns, do not alter the Gemini extraction schema, do not change `sync`, `digest`, or `daily` behavior, do not move Gmail/Sheets IO, draft creation, template rendering, contact discovery, or CLI orchestration out of `tracker.py`, and keep all existing non-goals. If a future split is ever considered, it must be justified by the repo state rather than assumed up front.
