@@ -298,6 +298,8 @@ python tracker.py --delete-app APPL_ID1 APPL_ID2
 python tracker.py --full-reset
 ```
 
+Manual-review candidates may appear in the digest, but only automatic draft-backed actions are queued for `--confirm`.
+
 ### Manage individual applications
 
 ```bash
@@ -319,9 +321,9 @@ Search by company or role, then choose an action:
 You can also do all of these directly in the Google Sheet, or via the **Job Tracker** menu (Apps Script — see below).
 
 Per-action policy values:
-- `enabled`: allow the normal digest automation for that action. Blank cells are treated as `enabled`.
+- `enabled`: normal automatic draft behavior. Blank cells are treated as `enabled`.
 - `disabled`: suppress that action for this row.
-- `ask_when_due`: reserved for a future manual-review flow. In this compatibility stage it does not silently create automatic digest actions.
+- `ask_when_due`: show the due item in the digest/manual-review section, but do not create a Gmail draft automatically.
 
 Legacy opt-out columns are still honored for existing sheets, but explicit new policy fields take precedence.
 
