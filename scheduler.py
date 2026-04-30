@@ -4,17 +4,13 @@ Cross-platform scheduler setup for applications-tracker.
 
 Registers two scheduled jobs:
   1. --sync   every 2 hours  (silent background)
-  2. --digest once per day   at --digest-time (default 10:00)
-
-The daily scheduler intentionally keeps using --digest during the compatibility
-stage. In this stage --digest still runs the full daily workflow, equivalent to
-the clearer manual command --daily.
+  2. --daily  once per day   at --digest-time (default 10:00)
 
 Re-running this script is safe — it replaces existing entries, never duplicates.
 
 Usage:
-  python scheduler.py                        # digest at 10:00 (default)
-  python scheduler.py --digest-time 08:30   # digest at 08:30
+  python scheduler.py                        # daily workflow at 10:00 (default)
+  python scheduler.py --digest-time 08:30   # daily workflow at 08:30
   python scheduler.py --remove              # remove all applications-tracker schedules
 
 Windows  → Task Scheduler via schtasks
@@ -47,7 +43,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="Schedule applications-tracker jobs")
     p.add_argument(
         "--digest-time", default="10:00", metavar="HH:MM",
-        help="Time to run daily digest (24h format, default: 10:00)"
+        help="Time to run the daily workflow (24h format, default: 10:00)"
     )
     p.add_argument(
         "--remove", action="store_true",
@@ -140,7 +136,7 @@ def setup_windows(hour: int, minute: int):
         print("Note: registering tasks for current user only (no admin required).")
 
     sync_tr   = f'"{PYTHON_EXE}" "{SCRIPT}" --sync'
-    digest_tr = f'"{PYTHON_EXE}" "{SCRIPT}" --digest'
+    digest_tr = f'"{PYTHON_EXE}" "{SCRIPT}" --daily'
     digest_st = f"{hour:02d}:{minute:02d}"
 
     print("Registering Task Scheduler jobs …\n")
@@ -266,7 +262,7 @@ def setup_macos(hour: int, minute: int):
     )
     p_digest = _write_plist(
         PLIST_DIGEST,
-        [str(PYTHON_EXE), str(SCRIPT), "--digest"],
+        [str(PYTHON_EXE), str(SCRIPT), "--daily"],
         hour=hour, minute=minute,
     )
 
@@ -323,7 +319,7 @@ def setup_linux(hour: int, minute: int):
     log_digest = LOG_DIR / "digest.log"
 
     sync_line   = f"0 */2 * * * {PYTHON_EXE} {SCRIPT} --sync >> {log_sync} 2>&1"
-    digest_line = f"{minute} {hour} * * * {PYTHON_EXE} {SCRIPT} --digest >> {log_digest} 2>&1"
+    digest_line = f"{minute} {hour} * * * {PYTHON_EXE} {SCRIPT} --daily >> {log_digest} 2>&1"
 
     existing = _read_crontab()
     cleaned  = _strip_job_lines(existing)  # remove old entries regardless

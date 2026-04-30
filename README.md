@@ -267,14 +267,12 @@ python tracker.py --delete-app APPL_ID1 APPL_ID2 --yes
 Run once with your `.venv` activated — auto-detects your OS:
 
 ```bash
-python scheduler.py                       # digest at 10:00 (default)
-python scheduler.py --digest-time 08:30   # custom digest time
+python scheduler.py                       # daily workflow at 10:00 (default)
+python scheduler.py --digest-time 08:30   # custom daily workflow time
 python scheduler.py --remove              # remove all scheduled jobs
 ```
 
-This registers two jobs: `--sync` every 2 hours (silent), and `--digest` once daily at your chosen time.
-
-Compatibility note: the scheduled `--digest` command still performs the full daily workflow for now: it syncs Gmail first, then evaluates due actions and creates Gmail drafts. For manual runs, prefer `--daily` because it names that combined workflow explicitly. A future release may narrow `--digest` to digest-only action planning.
+This registers two jobs: `--sync` every 2 hours (silent), and `--daily` once daily at your chosen time.
 
 ---
 
@@ -284,8 +282,8 @@ Compatibility note: the scheduled `--digest` command still performs the full dai
 # Morning — runs automatically at your scheduled time, or manually:
 python tracker.py --daily     # syncs + shows due actions + creates Gmail drafts
 
-# Compatibility mode with the same behavior in this stage:
-python tracker.py --digest    # syncs + shows due actions + creates Gmail drafts
+# Digest only — use after a separate sync, or when Sheets already reflect current Gmail:
+python tracker.py --digest    # shows due actions + creates Gmail drafts without syncing
 
 # Review the table, then:
 python tracker.py --confirm   # press Y to send all drafts
