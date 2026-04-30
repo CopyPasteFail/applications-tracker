@@ -171,6 +171,21 @@ class FollowUpEngineTests(unittest.TestCase):
         self.assertEqual(get_effective_action_policy(app, "follow_up"), "enabled")
         self.assertFalse(action_blocks_automatic_digest(app, "follow_up"))
 
+    def test_explicit_ask_when_due_policy_overrides_legacy_opt_out(self) -> None:
+        follow_up_app = {"follow_up_opt_out": "yes", "follow_up_policy": "ask_when_due"}
+        deletion_request_app = {
+            "deletion_request_opt_out": "yes",
+            "deletion_request_policy": "ask_when_due",
+        }
+
+        self.assertEqual(get_effective_action_policy(follow_up_app, "follow_up"), "ask_when_due")
+        self.assertEqual(
+            get_effective_action_policy(deletion_request_app, "deletion_request"),
+            "ask_when_due",
+        )
+        self.assertTrue(action_blocks_automatic_digest(follow_up_app, "follow_up"))
+        self.assertTrue(action_blocks_automatic_digest(deletion_request_app, "deletion_request"))
+
     def test_ask_when_due_blocks_automatic_digest_creation(self) -> None:
         self.assertTrue(
             action_blocks_automatic_digest(

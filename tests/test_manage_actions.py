@@ -94,6 +94,21 @@ class ManageActionTests(unittest.TestCase):
         )
         self.assertEqual(app["follow_up_policy"], "disabled")
 
+    def test_manage_action_opt_outs_sets_follow_up_policy_to_ask_when_due(self) -> None:
+        tracker = Tracker.__new__(Tracker)
+        tracker.sheets = Mock()
+        app = {"appl_id": "app-1", "follow_up_policy": ""}
+
+        with patch("tracker.console.print"), patch("tracker.Prompt.ask", side_effect=["f", "k"]):
+            tracker._manage_action_opt_outs(app)
+
+        tracker.sheets.set_field.assert_called_once_with(
+            "app-1",
+            "follow_up_policy",
+            "ask_when_due",
+        )
+        self.assertEqual(app["follow_up_policy"], "ask_when_due")
+
     def test_manage_action_opt_outs_shows_effective_legacy_policy_in_detail_view(self) -> None:
         tracker = Tracker.__new__(Tracker)
         tracker.sheets = Mock()
@@ -132,6 +147,21 @@ class ManageActionTests(unittest.TestCase):
             "ask_when_due",
         )
         self.assertEqual(app["withdraw_policy"], "ask_when_due")
+
+    def test_manage_action_opt_outs_sets_deletion_request_policy_to_ask_when_due(self) -> None:
+        tracker = Tracker.__new__(Tracker)
+        tracker.sheets = Mock()
+        app = {"appl_id": "app-1", "deletion_request_policy": ""}
+
+        with patch("tracker.console.print"), patch("tracker.Prompt.ask", side_effect=["d", "k"]):
+            tracker._manage_action_opt_outs(app)
+
+        tracker.sheets.set_field.assert_called_once_with(
+            "app-1",
+            "deletion_request_policy",
+            "ask_when_due",
+        )
+        self.assertEqual(app["deletion_request_policy"], "ask_when_due")
 
     def test_persist_resolved_contact_email_skips_privacy_actions(self) -> None:
         tracker = Tracker.__new__(Tracker)
