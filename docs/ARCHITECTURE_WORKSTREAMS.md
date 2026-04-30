@@ -4,7 +4,8 @@ This document is a repo-local continuation note for future ChatGPT/Codex session
 
 ## Current Architecture State
 
-- `tracker.py` still owns the end-to-end CLI, Gmail/Sheets IO, draft creation, and the digest execution flow.
+- `tracker.py` still owns the end-to-end CLI, Gmail/Sheets IO, draft creation, template rendering, contact discovery, digest execution flow, and backward-compatible imports.
+- `tracker_actions.py` now owns `FollowUpEngine` plus the pure action-planning, status, lifecycle, and policy helpers extracted from `tracker.py`.
 - Recent architectural work has already separated lifecycle and policy concepts from raw Sheet status strings.
 - The code now distinguishes between:
   - user-visible Sheet statuses, which remain unchanged for compatibility
@@ -14,17 +15,18 @@ This document is a repo-local continuation note for future ChatGPT/Codex session
   - `--sync` runs Gmail ingestion only
   - `--digest` computes actions and creates drafts without syncing
   - `--daily` runs sync first, then computes actions and creates drafts
-- The current validated state was clean after `dc8a887`, with full pytest, ruff, and `git diff --check` passing.
+- The current validated state was clean after `cabc9ed`, with full pytest, ruff, `git diff --check`, and CLI help passing.
 
 ## Completed Workstream Summary
 
-The following commits already landed the architectural foundation for the next extraction step:
+The following commits already landed the architectural foundation and action-planning extraction:
 
 - `dc8a887` - Add application lifecycle projection
 - `a0a7f96` - Centralize application status rules
 - `62640ee` - Make digest command action-only
 - `c0558af` - Add explicit daily digest command
 - `c28fabb` - Add per-action application policies
+- `cabc9ed` - Extract action planning module
 
 Collectively, these commits:
 
@@ -33,20 +35,22 @@ Collectively, these commits:
 - made the digest command compute actions only
 - separated daily workflow orchestration from digest-only behavior
 - added per-action policy helpers, including compatibility with legacy opt-out columns
+- moved `FollowUpEngine` and pure action-planning helpers into `tracker_actions.py` while preserving user-facing behavior and backward-compatible imports from `tracker.py`
 
 ## Recommended Next Workstream
 
-### Extract action planning from `tracker.py`
+### Clarify status, lifecycle, and policy helper boundaries
 
-This is the next recommended slice because it is lower risk than changing user-facing statuses and it builds directly on the new action policy helpers and lifecycle projection. It also makes any future status simplification safer by shrinking the amount of digest logic that remains coupled to CLI and IO code.
+This is the next recommended slice because action planning has already been extracted, and the remaining low-risk architecture improvement is to make the status/lifecycle/policy helper boundary easier to understand without changing behavior. Keep this narrow: only split or rename helpers if the current `tracker_actions.py` grouping is becoming unclear.
 
 ## Proposed Target Extraction
 
-- Move `FollowUpEngine` and the pure action-planning helpers into a small module, likely `tracker_actions.py`.
-- Use a package only if that becomes clearly justified by the amount of shared logic or future modules.
-- Keep Gmail IO, Sheets IO, draft creation, and command orchestration in `tracker.py` for now.
-- Keep command behavior unchanged during this extraction.
-- Preserve backward-compatible imports if tests or callers still import action-planning symbols from `tracker.py`.
+- Audit the helpers now living in `tracker_actions.py` and identify whether status normalization, lifecycle projection, and per-action policy rules would be clearer in a focused module such as `tracker_status.py` or `tracker_policy.py`.
+- Prefer no code movement if the current module still reads clearly after the action-planning extraction.
+- If a split is justified, move only pure helper functions and types with no Gmail, Sheets, draft creation, or CLI dependencies.
+- Keep `FollowUpEngine` and action planning in `tracker_actions.py`.
+- Keep command behavior and user-facing Sheet statuses unchanged.
+- Preserve backward-compatible imports from `tracker.py` if tests or callers still rely on them.
 
 ## Explicit Non-Goals For The Next Workstream
 
@@ -55,16 +59,19 @@ This is the next recommended slice because it is lower risk than changing user-f
 - Do not change the Gemini extraction schema.
 - Do not change `sync`, `digest`, or `daily` behavior.
 - Do not remove legacy opt-out compatibility yet.
+- Do not start a broad package restructure.
+- Do not move Gmail, Sheets, draft creation, template rendering, or contact discovery code.
 
 ## Suggested First Implementation Slice
 
-1. Move pure helpers and types first only if import cycles stay manageable.
-2. Move `FollowUpEngine` with tests.
-3. Keep public imports backward-compatible from `tracker.py` if tests or code still depend on them.
+1. Read `tracker_actions.py` and list the helpers that are status/lifecycle/policy-specific rather than action-planning-specific.
+2. Decide whether a focused helper module would materially improve clarity; if not, leave the code as-is and update this doc with that decision.
+3. If moving code, move only pure helpers first and keep imports backward-compatible from `tracker.py`.
+4. Run targeted tests before broader validation.
 
 ## Validation Checklist
 
-- Targeted tests for action planning and status helpers.
+- Targeted tests for action planning, status, lifecycle, and policy helpers.
 - Full `pytest`.
 - `ruff`.
 - `git diff --check`.
@@ -74,4 +81,4 @@ This is the next recommended slice because it is lower risk than changing user-f
 
 Paste this into a future ChatGPT/Codex session:
 
-> Continue the applications-tracker architecture work by extracting action planning from `tracker.py` into a small module, likely `tracker_actions.py`. Keep IO, Gmail/Sheets access, and draft creation in `tracker.py` for now. Preserve all current command behavior, do not change Sheet statuses, do not add `lifecycle_status` or `latest_signal` columns, do not alter the Gemini extraction schema, and do not remove legacy opt-out compatibility yet. Start with pure helpers only if import cycles are manageable, then move `FollowUpEngine` with tests, and keep backward-compatible imports from `tracker.py` if needed. Validate with targeted action-planning tests, full pytest, ruff, `git diff --check`, and CLI help sanity.
+> Continue the applications-tracker architecture work after `cabc9ed`, which extracted action planning into `tracker_actions.py`. The safest next slice is to clarify whether status, lifecycle, and policy helpers should remain in `tracker_actions.py` or move to a focused pure-helper module such as `tracker_status.py` or `tracker_policy.py`. Be conservative: do not change Sheet statuses, do not add `lifecycle_status` or `latest_signal` columns, do not alter the Gemini extraction schema, do not change `sync`, `digest`, or `daily` behavior, and do not move Gmail/Sheets IO, draft creation, template rendering, contact discovery, or CLI orchestration out of `tracker.py`. If no split clearly improves readability, leave the code as-is and update the handoff doc with that decision. Validate with targeted helper tests, full pytest, ruff, `git diff --check`, and CLI help sanity if code changes are made.
