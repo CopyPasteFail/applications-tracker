@@ -15,7 +15,7 @@ This document is a repo-local continuation note for future ChatGPT/Codex session
   - `--sync` runs Gmail ingestion only
   - `--digest` computes actions and creates drafts without syncing
   - `--daily` runs sync first, then computes actions and creates drafts
-- The current validated state is clean at `57cb576`, after the digest display-only `ask_when_due` manual-review candidate slice landed, with full pre-push pytest passing at 117 tests.
+- The current validated state is clean at `5a6d6c9`, after the digest display-only `ask_when_due` manual-review candidate slice and README clarification landed, with full pre-push pytest passing at 117 tests.
 
 ## Completed Workstream Summary
 
@@ -32,6 +32,7 @@ The following commits already landed the architectural foundation and action-pla
 - `94db694` - Pin ask-when-due policy boundary
 - `6f87328` - Add ask-when-due manual review planning
 - `57cb576` - Display ask-when-due manual review candidates
+- `5a6d6c9` - Clarify ask-when-due digest behavior
 
 Collectively, these commits:
 
@@ -55,13 +56,14 @@ Ask_when_due audit/test decision:
 - `ask_when_due` still blocks automatic draft creation
 - explicit `ask_when_due` policy precedence over legacy opt-out fields is now pinned by tests
 - the manage UI can set `ask_when_due` for follow-up and deletion-request, with existing withdrawal coverage already in place
+- the user-facing README clarification for `ask_when_due` behavior is complete
 
 ## Recommended Next Workstream
 
 ### Open Next Workstream
 
-The helper-boundary audit is complete for now. The next bounded candidate is wiring manual-review candidates into digest display only. Do not persist candidates yet, do not write candidates to `pending_actions.json`, do not change `confirm()`, and do not create Gmail drafts for `ask_when_due`.
-The next bounded candidate is documentation/user-facing README clarification for `ask_when_due` behavior. Do not jump straight into persistence unless there is a clear need.
+The helper-boundary audit is complete for now, and the display-only `ask_when_due` workstream is complete for now. The next session should inspect repo docs and code before choosing a new bounded workstream.
+Do not jump into persistence, send, or skip semantics unless there is a clear need.
 
 ## Proposed Target Extraction
 
@@ -89,10 +91,8 @@ The next bounded candidate is documentation/user-facing README clarification for
 
 ## Suggested First Implementation Slice
 
-1. Update the README to describe the current `ask_when_due` behavior accurately.
-2. Note that `ask_when_due` shows due items for manual review during `--digest`/`--daily` but does not create drafts.
-3. Mention that `pending_actions.json` and `confirm()` remain the automatic draft-send flow only, if that distinction fits the user docs.
-4. Only consider persistence/send/skip semantics later if there is a clear need.
+1. Start with a no-code audit of repo docs and code to confirm the current bounded workstream.
+2. Only consider persistence/send/skip semantics later if there is a clear need.
 
 ### Audit decision at 77e7386
 
@@ -121,4 +121,4 @@ Next recommended stage: minor doc/comment cleanup only, unless a later pass find
 
 Paste this into a future ChatGPT/Codex session:
 
-> Continue the applications-tracker architecture work after `57cb576`, which displayed `ask_when_due` manual-review candidates in digest/daily. Manual-review candidates are now shown during digest/daily, but they are not persisted and no drafts are created for them. Automatic action behavior is unchanged, `confirm()` remains draft-send only, and `pending_actions.json` remains the automatic draft-send queue only. The next step is user-facing README clarification for `ask_when_due` behavior, not persistence. Be conservative: do not jump straight into persistence, do not write candidates to `pending_actions.json`, do not change `confirm()`, do not create Gmail drafts for `ask_when_due`, do not change Sheet statuses, do not add `lifecycle_status` or `latest_signal` columns, do not alter the Gemini extraction schema, do not change `sync`, `digest`, or `daily` behavior, do not move Gmail/Sheets IO, draft creation, template rendering, contact discovery, or CLI orchestration out of `tracker.py`, and keep all existing non-goals.
+> Continue the applications-tracker architecture work after `5a6d6c9`, which clarified `ask_when_due` digest behavior in the README. The display-only `ask_when_due` flow is complete for now: manual-review candidates are shown during digest/daily, they are not persisted, they are not written to `pending_actions.json`, and no Gmail drafts are created for them. `confirm()` remains draft-send only, and no persistence/send/skip semantics exist yet. The next session should inspect repo docs and code before choosing a new bounded workstream. Be conservative: do not assume persistence, send, or skip semantics are the next step; do not jump straight into persistence, do not write candidates to `pending_actions.json`, do not change `confirm()`, do not create Gmail drafts for `ask_when_due`, do not change Sheet statuses, do not add `lifecycle_status` or `latest_signal` columns, do not alter the Gemini extraction schema, do not change `sync`, `digest`, or `daily` behavior, do not move Gmail/Sheets IO, draft creation, template rendering, contact discovery, or CLI orchestration out of `tracker.py`, and keep all existing non-goals.
