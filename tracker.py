@@ -9682,6 +9682,36 @@ class Tracker:
         )
 
     # ── digest ────────────────────────────────────────────────────────────────
+    def _print_manual_review_candidates(self, candidates: list[dict[str, Any]]) -> None:
+        if not candidates:
+            return
+
+        tbl = Table(
+            title=f"Manual Review Candidates ({len(candidates)})",
+            show_lines=True,
+            expand=True,
+        )
+        tbl.add_column("Type", width=16)
+        tbl.add_column("Company", width=18, style="cyan")
+        tbl.add_column("Role", width=22)
+        tbl.add_column("Reason", width=36, style="dim")
+        tbl.add_column("Appl ID", width=14, style="dim")
+
+        for candidate in candidates:
+            tbl.add_row(
+                str(candidate.get("type", "")).upper(),
+                str(candidate.get("company", "") or ""),
+                str(candidate.get("role", "") or ""),
+                str(candidate.get("reason", "") or ""),
+                str(candidate.get("appl_id", "") or ""),
+            )
+
+        console.print(
+            "\n  [yellow]Manual review only:[/yellow] these ask_when_due candidates "
+            "were not drafted and were not saved to pending_actions.json."
+        )
+        console.print(tbl)
+
     def run_digest_only(self) -> None:
         console.rule("[bold blue]Daily Digest")
 
@@ -9694,10 +9724,23 @@ class Tracker:
         console.print(f"  Evaluating pipeline actions for [green]{len(apps)}[/green] applications …")
         actions = self.engine.compute_actions(apps)
         console.print(f"  Actions due: [green]{len(actions)}[/green]")
+        manual_review_candidates = self.engine.compute_manual_review_candidates(apps)
+        if manual_review_candidates:
+            console.print(
+                f"  Manual review candidates due: [yellow]{len(manual_review_candidates)}[/yellow]"
+            )
 
         if not actions:
-            console.print(Panel("[bold green]🎉 No actions due. You're all caught up![/bold green]",
-                                expand=False))
+            if manual_review_candidates:
+                console.print(Panel(
+                    "[bold green]No draft-backed actions due.[/bold green]\n"
+                    "[yellow]Manual-review candidates require policy/action changes before drafting.[/yellow]",
+                    expand=False,
+                ))
+                self._print_manual_review_candidates(manual_review_candidates)
+            else:
+                console.print(Panel("[bold green]🎉 No actions due. You're all caught up![/bold green]",
+                                    expand=False))
             try:
                 PENDING_PATH.write_text("[]", encoding="utf-8")
             except OSError as error:
@@ -9811,14 +9854,22 @@ class Tracker:
             )
 
         console.print(tbl)
+        self._print_manual_review_candidates(manual_review_candidates)
         try:
             PENDING_PATH.write_text(json.dumps(pending, indent=2), encoding="utf-8")
         except OSError as error:
             raise TrackerError(f"Failed to write pending actions to {PENDING_PATH}: {error}") from error
-        console.print(
-            "\n  [dim]Drafts created in Gmail · pending_actions.json saved[/dim]\n"
-            "  Run [bold cyan]python tracker.py --confirm[/bold cyan] to review and send."
-        )
+        if manual_review_candidates:
+            console.print(
+                "\n  [dim]Drafts created in Gmail · pending_actions.json saved[/dim]\n"
+                "  [dim]Manual-review candidates were displayed only; no drafts or pending records were created for them.[/dim]\n"
+                "  Run [bold cyan]python tracker.py --confirm[/bold cyan] to review and send."
+            )
+        else:
+            console.print(
+                "\n  [dim]Drafts created in Gmail · pending_actions.json saved[/dim]\n"
+                "  Run [bold cyan]python tracker.py --confirm[/bold cyan] to review and send."
+            )
 
     def _run_digest_after_sync(self) -> None:
         self.run_digest_only()

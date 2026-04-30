@@ -1,10 +1,27 @@
 import unittest
+import json
+import tempfile
+from pathlib import Path
 from unittest.mock import Mock, patch
+
+from rich.table import Table
 
 from tracker import Tracker
 
 
 class ManageActionTests(unittest.TestCase):
+    def _digest_tracker_with_pending_path(self, pending_path: Path) -> Tracker:
+        tracker = Tracker.__new__(Tracker)
+        tracker.cfg = {"user": {"name": "Omer", "career_email": "omer@example.com"}}
+        tracker.sheets = Mock()
+        tracker.gmail = Mock()
+        tracker.ai = Mock()
+        tracker.engine = Mock()
+        tracker._delete_pending_gmail_drafts = Mock()
+        tracker._clear_pending_action_draft_references = Mock()
+        tracker._delete_pending_actions_file = Mock()
+        return tracker
+
     def test_normalize_manage_action_accepts_single_letter_shortcuts(self) -> None:
         self.assertEqual(Tracker._normalize_manage_action("d"), "defer")
         self.assertEqual(Tracker._normalize_manage_action("p"), "pause")
@@ -240,6 +257,136 @@ class ManageActionTests(unittest.TestCase):
             allow_stored_recipient=False,
             privacy_only=True,
         )
+
+    def test_digest_displays_ask_when_due_manual_review_without_creating_drafts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pending_path = Path(temp_dir) / "pending_actions.json"
+            tracker = self._digest_tracker_with_pending_path(pending_path)
+            app = {
+                "appl_id": "WUR-AIP-17",
+                "company": "Acme",
+                "role": "Engineer",
+            }
+            candidate = {
+                "mode": "manual_review",
+                "type": "follow_up",
+                "appl_id": "WUR-AIP-17",
+                "company": "Acme",
+                "role": "Engineer",
+                "reason": "7d inactive - follow-up #1",
+                "policy": "ask_when_due",
+                "follow_up_n": 1,
+            }
+            tracker.sheets.get_all.return_value = [app]
+            tracker.engine.compute_actions.return_value = []
+            tracker.engine.compute_manual_review_candidates.return_value = [candidate]
+
+            with patch("tracker.PENDING_PATH", pending_path), patch("tracker.console.print") as mock_print:
+                tracker.run_digest_only()
+
+            tracker.engine.compute_actions.assert_called_once_with([app])
+            tracker.engine.compute_manual_review_candidates.assert_called_once_with([app])
+            tracker.gmail.create_draft.assert_not_called()
+            self.assertEqual(json.loads(pending_path.read_text(encoding="utf-8")), [])
+            printed_tables = [
+                call.args[0]
+                for call in mock_print.call_args_list
+                if call.args and isinstance(call.args[0], Table)
+            ]
+            self.assertTrue(any("Manual Review" in table.title for table in printed_tables))
+
+    def test_digest_automatic_actions_still_create_drafts_and_pending_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pending_path = Path(temp_dir) / "pending_actions.json"
+            tracker = self._digest_tracker_with_pending_path(pending_path)
+            app = {
+                "appl_id": "WUR-AIP-21",
+                "company": "Acme",
+                "role": "Engineer",
+            }
+            action = {
+                "type": "follow_up",
+                "app": app,
+                "reason": "7d inactive - follow-up #1",
+                "follow_up_n": 1,
+            }
+            tracker.sheets.get_all.return_value = [app]
+            tracker.engine.compute_actions.return_value = [action]
+            tracker.engine.compute_manual_review_candidates.return_value = []
+            tracker._choose_existing_or_manual_privacy_contact = Mock(return_value=("recruiter@example.com", False))
+            tracker._resolve_company_contact_email = Mock(side_effect=AssertionError("contact should already be resolved"))
+            tracker._persist_resolved_contact_email = Mock()
+            tracker._resolve_missing_email_action = Mock(side_effect=AssertionError("target email should exist"))
+            tracker.ai.generate_follow_up.return_value = ("Checking in", "Hello")
+            tracker.gmail.create_draft.return_value = "draft-1"
+
+            with patch("tracker.PENDING_PATH", pending_path), patch("tracker.console.print"):
+                tracker.run_digest_only()
+
+            tracker.gmail.create_draft.assert_called_once_with(
+                "recruiter@example.com",
+                "Checking in",
+                "Hello",
+                from_addr="omer@example.com",
+            )
+            pending = json.loads(pending_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["type"], "follow_up")
+            self.assertEqual(pending[0]["appl_id"], "WUR-AIP-21")
+            self.assertEqual(pending[0]["draft_id"], "draft-1")
+
+    def test_digest_mixed_actions_persist_only_automatic_pending_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pending_path = Path(temp_dir) / "pending_actions.json"
+            tracker = self._digest_tracker_with_pending_path(pending_path)
+            auto_app = {
+                "appl_id": "WUR-AIP-21",
+                "company": "AutoCo",
+                "role": "Engineer",
+            }
+            manual_app = {
+                "appl_id": "WUR-AIP-22",
+                "company": "ManualCo",
+                "role": "Designer",
+            }
+            action = {
+                "type": "follow_up",
+                "app": auto_app,
+                "reason": "7d inactive - follow-up #1",
+                "follow_up_n": 1,
+            }
+            candidate = {
+                "mode": "manual_review",
+                "type": "withdraw",
+                "appl_id": "WUR-AIP-22",
+                "company": "ManualCo",
+                "role": "Designer",
+                "reason": "Ghosted - 14d since last activity",
+                "policy": "ask_when_due",
+            }
+            tracker.sheets.get_all.return_value = [auto_app, manual_app]
+            tracker.engine.compute_actions.return_value = [action]
+            tracker.engine.compute_manual_review_candidates.return_value = [candidate]
+            tracker._choose_existing_or_manual_privacy_contact = Mock(return_value=("recruiter@example.com", False))
+            tracker._resolve_company_contact_email = Mock(return_value="recruiter@example.com")
+            tracker._persist_resolved_contact_email = Mock()
+            tracker._resolve_missing_email_action = Mock(side_effect=AssertionError("target email should exist"))
+            tracker.ai.generate_follow_up.return_value = ("Checking in", "Hello")
+            tracker.gmail.create_draft.return_value = "draft-1"
+
+            with patch("tracker.PENDING_PATH", pending_path), patch("tracker.console.print") as mock_print:
+                tracker.run_digest_only()
+
+            tracker.gmail.create_draft.assert_called_once()
+            pending = json.loads(pending_path.read_text(encoding="utf-8"))
+            self.assertEqual([record["appl_id"] for record in pending], ["WUR-AIP-21"])
+            self.assertNotIn("WUR-AIP-22", json.dumps(pending))
+            printed_tables = [
+                call.args[0]
+                for call in mock_print.call_args_list
+                if call.args and isinstance(call.args[0], Table)
+            ]
+            self.assertTrue(any("Manual Review" in table.title for table in printed_tables))
 
 
 if __name__ == "__main__":
