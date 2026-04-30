@@ -274,12 +274,17 @@ python scheduler.py --remove              # remove all scheduled jobs
 
 This registers two jobs: `--sync` every 2 hours (silent), and `--digest` once daily at your chosen time.
 
+Compatibility note: the scheduled `--digest` command still performs the full daily workflow for now: it syncs Gmail first, then evaluates due actions and creates Gmail drafts. For manual runs, prefer `--daily` because it names that combined workflow explicitly. A future release may narrow `--digest` to digest-only action planning.
+
 ---
 
 ## Daily workflow
 
 ```bash
 # Morning — runs automatically at your scheduled time, or manually:
+python tracker.py --daily     # syncs + shows due actions + creates Gmail drafts
+
+# Compatibility mode with the same behavior in this stage:
 python tracker.py --digest    # syncs + shows due actions + creates Gmail drafts
 
 # Review the table, then:

@@ -182,7 +182,7 @@ class SyncFailClosedTests(unittest.TestCase):
         tracker._backfill_statuses_from_gmail = Mock(side_effect=lambda updates, base_query: updates)
         tracker._backfill_missing_companies_from_gmail = Mock(side_effect=lambda updates, base_query: updates)
         tracker._backfill_missing_roles_from_gmail = Mock(side_effect=lambda updates, base_query: updates)
-        tracker._run_digest_after_sync = Mock()
+        tracker.run_digest_only = Mock()
 
         with self.assertRaises(TrackerError):
             tracker.sync()
@@ -197,7 +197,7 @@ class SyncFailClosedTests(unittest.TestCase):
         tracker.gmail.apply_labels_to_messages.assert_called_once()
         tracker.processed_message_state.record_processed_message_ids.assert_called_once()
         self.assertFalse(saved_run_files[0].exists())
-        tracker._run_digest_after_sync.assert_not_called()
+        tracker.run_digest_only.assert_not_called()
 
 
 if __name__ == "__main__":

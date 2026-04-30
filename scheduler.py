@@ -6,6 +6,10 @@ Registers two scheduled jobs:
   1. --sync   every 2 hours  (silent background)
   2. --digest once per day   at --digest-time (default 10:00)
 
+The daily scheduler intentionally keeps using --digest during the compatibility
+stage. In this stage --digest still runs the full daily workflow, equivalent to
+the clearer manual command --daily.
+
 Re-running this script is safe — it replaces existing entries, never duplicates.
 
 Usage:

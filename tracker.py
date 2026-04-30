@@ -7,7 +7,8 @@ Handles follow-ups and withdrawals with daily digest + manual confirmation.
 
 Usage:
   python tracker.py --sync            # fetch emails, update Sheets (run hourly via cron)
-  python tracker.py --digest          # syncs first, then prepares today's actions + drafts
+  python tracker.py --daily           # syncs first, then prepares today's actions + drafts
+  python tracker.py --digest          # compatibility alias for --daily in this stage
   python tracker.py --confirm         # review & send all pending drafts
   python tracker.py --add-linkedin    # add a LinkedIn application manually
   python tracker.py --delete-app ID   # delete one or more application rows without syncing
@@ -7257,7 +7258,7 @@ class Tracker:
         self._execute_grouping_run(saved_run_state)
         self._finalize_completed_sync_run(saved_run_state)
         if bool(saved_run_state.get("continue_to_digest")):
-            self._run_digest_after_sync()
+            self.run_digest_only()
 
     @staticmethod
     def _missing_email_policy_field(action_type: str) -> str:
@@ -9901,7 +9902,7 @@ class Tracker:
         )
 
     # ── digest ────────────────────────────────────────────────────────────────
-    def _run_digest_after_sync(self) -> None:
+    def run_digest_only(self) -> None:
         console.rule("[bold blue]Daily Digest")
 
         self._delete_pending_gmail_drafts()
@@ -10039,9 +10040,15 @@ class Tracker:
             "  Run [bold cyan]python tracker.py --confirm[/bold cyan] to review and send."
         )
 
-    def digest(self):
+    def _run_digest_after_sync(self) -> None:
+        self.run_digest_only()
+
+    def run_daily_digest(self) -> None:
         self.sync(continue_to_digest=True)
-        self._run_digest_after_sync()
+        self.run_digest_only()
+
+    def digest(self) -> None:
+        self.run_daily_digest()
 
     # ── confirm ───────────────────────────────────────────────────────────────
     def confirm(self):
@@ -10319,7 +10326,8 @@ def main():
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--sync",          action="store_true", help="Fetch emails and update Sheets")
-    g.add_argument("--digest",        action="store_true", help="Sync + compute actions + create drafts")
+    g.add_argument("--digest",        action="store_true", help="Compatibility mode: sync + compute actions + create drafts")
+    g.add_argument("--daily",         action="store_true", help="Run the daily workflow: sync + compute actions + create drafts")
     g.add_argument("--confirm",       action="store_true", help="Review and send pending drafts")
     g.add_argument("--manage",        action="store_true", help="Defer, pause, resume, or fix email for an application")
     g.add_argument("--add-linkedin",  action="store_true", help="Manually add a LinkedIn application")
@@ -10340,6 +10348,8 @@ def main():
             t.sync()
         elif args.digest:
             t.digest()
+        elif args.daily:
+            t.run_daily_digest()
         elif args.confirm:
             t.confirm()
         elif args.manage:
