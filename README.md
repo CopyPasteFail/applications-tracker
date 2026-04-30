@@ -392,6 +392,8 @@ If a template file is missing, Gemini generates the email body as a fallback.
 | `gmail_review_url` | Clickable Gmail link for reviewing the emails tied to this application |
 | `draft_id` | Current pending Gmail draft ID (internal) |
 
+Status compatibility note: existing Sheet statuses are still supported as-is. Internally, the tracker is beginning to group them into simpler lifecycle categories (`active`, `paused`, `rejected`, `withdrawn`, `offer`) while preserving the current Sheet values and Gemini extraction schema.
+
 ---
 
 ## Apps Script (Google Sheets menu)

@@ -38,7 +38,7 @@ from email.utils import parseaddr, parsedate_to_datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Any, Callable, Match, Optional, TypeAlias, TypeVar, cast
+from typing import Any, Callable, Literal, Match, Optional, TypeAlias, TypeVar, cast
 from urllib.parse import quote, urlparse, urljoin
 from urllib.request import Request as UrlRequest, urlopen
 import yaml
@@ -69,6 +69,8 @@ PendingActionRecord: TypeAlias = dict[str, Any]
 JsonObject: TypeAlias = dict[str, Any]
 ContactEmailCandidate: TypeAlias = dict[str, Any]
 ActionPolicy: TypeAlias = str
+ApplicationLifecycle: TypeAlias = Literal["active", "paused", "rejected", "withdrawn", "offer"]
+ApplicationProgressSignal: TypeAlias = Literal["applied", "screening", "interview", "assessment", "unknown"]
 
 OperationResultT = TypeVar("OperationResultT")
 
@@ -152,6 +154,26 @@ PIPELINE_BLOCKING_APPLICATION_STATUSES = {"Offer", "Withdrawn", "Paused"}
 TERMINAL_APPLICATION_STATUSES = {"Rejected", "Withdrawn", "Offer", "Ghosted"}
 AUTO_WITHDRAW_BLOCKING_APPLICATION_STATUSES = {"Interview", "Assessment"}
 DEFERRED_UNTIL_CLEARING_APPLICATION_STATUSES = {"Rejected"}
+APPLICATION_LIFECYCLE_BY_STATUS: dict[str, ApplicationLifecycle] = {
+    "Applied": "active",
+    "Screening": "active",
+    "Interview": "active",
+    "Assessment": "active",
+    "Paused": "paused",
+    "Rejected": "rejected",
+    "Withdrawn": "withdrawn",
+    "Offer": "offer",
+    # Ghosted remains an internal compatibility status. Project it to active so it
+    # does not become a user-facing lifecycle, while terminal/backfill rules keep
+    # their existing explicit Ghosted handling.
+    "Ghosted": "active",
+}
+APPLICATION_PROGRESS_SIGNAL_BY_STATUS: dict[str, ApplicationProgressSignal] = {
+    "Applied": "applied",
+    "Screening": "screening",
+    "Interview": "interview",
+    "Assessment": "assessment",
+}
 
 
 def normalize_application_status(raw_status: Any) -> str:
@@ -165,6 +187,21 @@ def status_rank(status: Any) -> int:
     return STATUS_RANK.get(normalize_application_status(status), STATUS_RANK[DEFAULT_APPLICATION_STATUS])
 
 
+def application_lifecycle_from_status(status: Any) -> ApplicationLifecycle:
+    """Project stored Sheet statuses into the simplified compatibility lifecycle."""
+    return APPLICATION_LIFECYCLE_BY_STATUS.get(normalize_application_status(status), "active")
+
+
+def application_progress_signal_from_status(status: Any) -> ApplicationProgressSignal:
+    """Project stored Sheet statuses into optional progress detail signals."""
+    return APPLICATION_PROGRESS_SIGNAL_BY_STATUS.get(normalize_application_status(status), "unknown")
+
+
+def is_active_application_lifecycle(lifecycle: Any) -> bool:
+    """Return whether a projected lifecycle is still in the active pipeline group."""
+    return str(lifecycle or "").strip().lower() == "active"
+
+
 def is_terminal_application_status(status: Any) -> bool:
     """Return whether a status is treated as a completed outcome for status backfill."""
     return normalize_application_status(status) in TERMINAL_APPLICATION_STATUSES
@@ -172,12 +209,12 @@ def is_terminal_application_status(status: Any) -> bool:
 
 def is_paused_application_status(status: Any) -> bool:
     """Return whether a status represents a manually paused application."""
-    return normalize_application_status(status) == "Paused"
+    return application_lifecycle_from_status(status) == "paused"
 
 
 def status_blocks_pipeline_actions(status: Any) -> bool:
     """Return whether normal digest pipeline actions should be skipped for this status."""
-    return normalize_application_status(status) in PIPELINE_BLOCKING_APPLICATION_STATUSES
+    return application_lifecycle_from_status(status) in {"paused", "withdrawn", "offer"}
 
 
 def status_blocks_auto_withdraw(status: Any) -> bool:
