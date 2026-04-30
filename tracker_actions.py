@@ -40,6 +40,9 @@ APPLICATION_PROGRESS_SIGNAL_BY_STATUS: dict[str, ApplicationProgressSignal] = {
 }
 
 
+# Status and lifecycle helpers
+
+
 def normalize_application_status(raw_status: Any) -> str:
     """Return the canonical current status string used by compatibility-stage rules."""
     status = str(raw_status or "").strip()
@@ -91,6 +94,9 @@ def should_clear_deferred_until_for_status(status: Any) -> bool:
     return normalize_application_status(status) in DEFERRED_UNTIL_CLEARING_APPLICATION_STATUSES
 
 
+# Generic date and sheet-value helpers
+
+
 def parse_iso_date(raw_date: str) -> Optional[datetime]:
     """
     Parse an ISO-like date string into a datetime for comparison logic.
@@ -135,6 +141,9 @@ def is_truthy_sheet_value(raw_value: object) -> bool:
     """
     normalized_value = str(raw_value or "").strip().lower()
     return normalized_value in {"1", "true", "yes", "y", "skip", "opt_out", "opt-out"}
+
+
+# Per-action policy helpers
 
 
 def normalize_action_policy(raw_value: object) -> ActionPolicy:
@@ -197,6 +206,9 @@ def action_blocks_automatic_digest(app: ApplicationRecord, action_type: str) -> 
 
 def _default_today_utc() -> date:
     return datetime.now(timezone.utc).date()
+
+
+# Follow-up action planning
 
 
 class FollowUpEngine:
