@@ -427,3 +427,7 @@ Select any row, then use the menu to defer, pause, resume, set a contact email, 
 
 **Gemini rate limit errors**
 → Reduce `gemini.grouping_batch_size` in `config.yaml`, lower `gemini.rate_limit_max_wait_seconds` if you want sync to stop sooner, or upgrade to a higher Gemini quota tier/model. The tracker now stops AI grouping early when Gemini reports quota exhaustion instead of continuing to spam failed batches.
+
+## Development Notes
+
+- [Architecture workstreams and handoff plan](docs/ARCHITECTURE_WORKSTREAMS.md)
