@@ -7,6 +7,7 @@ from typing import Any, Callable, Literal, Optional, TypeAlias
 ConfigDict: TypeAlias = dict[str, Any]
 ApplicationRecord: TypeAlias = dict[str, Any]
 PendingActionRecord: TypeAlias = dict[str, Any]
+ManualReviewCandidate: TypeAlias = dict[str, Any]
 ActionPolicy: TypeAlias = str
 ApplicationLifecycle: TypeAlias = Literal["active", "paused", "rejected", "withdrawn", "offer"]
 ApplicationProgressSignal: TypeAlias = Literal["applied", "screening", "interview", "assessment", "unknown"]
@@ -249,6 +250,114 @@ class FollowUpEngine:
         if not candidate_datetimes:
             return None
         return max(candidate_datetimes).date()
+
+    def _manual_review_candidate(
+        self,
+        app: ApplicationRecord,
+        action_type: str,
+        reason: str,
+        follow_up_n: Optional[int] = None,
+    ) -> ManualReviewCandidate:
+        candidate: ManualReviewCandidate = {
+            "mode": "manual_review",
+            "type": action_type,
+            "appl_id": app.get("appl_id", ""),
+            "company": app.get("company", ""),
+            "role": app.get("role", ""),
+            "reason": reason,
+            "policy": "ask_when_due",
+        }
+        if follow_up_n is not None:
+            candidate["follow_up_n"] = follow_up_n
+        return candidate
+
+    def compute_manual_review_candidates(
+        self,
+        applications: list[ApplicationRecord],
+    ) -> list[ManualReviewCandidate]:
+        today = self._today_provider()
+        candidates: list[ManualReviewCandidate] = []
+
+        for app in applications:
+            status = normalize_application_status(app.get("status"))
+            manual_withdraw_requested = is_truthy_sheet_value(app.get("withdraw_in_next_digest"))
+
+            if status_blocks_pipeline_actions(status):
+                continue
+
+            withdrawal_already_sent = bool(app.get("withdrawal_sent_date"))
+            if withdrawal_already_sent:
+                continue
+
+            if manual_withdraw_requested and get_effective_action_policy(app, "withdraw") != "disabled":
+                continue
+
+            deferred = str(app.get("deferred_until", "") or "").strip()
+            if deferred:
+                try:
+                    defer_date = datetime.fromisoformat(deferred[:10]).date()
+                    if defer_date > today:
+                        continue
+                except ValueError:
+                    pass
+
+            ref_date = self._get_withdraw_reference_date(app)
+            if ref_date is None:
+                continue
+
+            days = (today - ref_date).days
+            deletion_request_already_sent = bool(app.get("deletion_request_sent_date"))
+
+            if status == "Rejected":
+                if deletion_request_already_sent:
+                    continue
+                if (
+                    days >= self.deletion_request_days
+                    and get_effective_action_policy(app, "deletion_request") == "ask_when_due"
+                ):
+                    candidates.append(
+                        self._manual_review_candidate(
+                            app,
+                            "deletion_request",
+                            f"Rejected — {days}d since last activity",
+                        )
+                    )
+                continue
+
+            if (
+                days >= self.withdraw_days
+                and not status_blocks_auto_withdraw(status)
+                and get_effective_action_policy(app, "withdraw") == "ask_when_due"
+            ):
+                candidates.append(
+                    self._manual_review_candidate(
+                        app,
+                        "withdraw",
+                        f"Ghosted — {days}d since last activity",
+                    )
+                )
+                continue
+
+            if days >= self.follow_up_days and get_effective_action_policy(app, "follow_up") == "ask_when_due":
+                last_fu = app.get("follow_up_sent_date")
+                if last_fu:
+                    try:
+                        last_fu_date = datetime.fromisoformat(last_fu[:10]).date()
+                        if (today - last_fu_date).days < self.follow_up_repeat_days:
+                            continue
+                    except ValueError:
+                        pass
+                follow_up_n = int(app.get("follow_up_count") or 0) + 1
+                candidates.append(
+                    self._manual_review_candidate(
+                        app,
+                        "follow_up",
+                        f"{days}d inactive — follow-up #{follow_up_n}",
+                        follow_up_n,
+                    )
+                )
+
+        return candidates
 
     def compute_actions(
         self,

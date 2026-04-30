@@ -335,6 +335,179 @@ class FollowUpEngineTests(unittest.TestCase):
 
         self.assertEqual(actions, [])
 
+    def test_ask_when_due_follow_up_due_becomes_manual_review_candidate_only(self) -> None:
+        app = {
+            "appl_id": "WUR-AIP-17",
+            "company": "Acme",
+            "role": "Engineer",
+            "status": "Applied",
+            "applied_date": "2026-03-27",
+            "last_activity_date": "",
+            "follow_up_sent_date": "",
+            "follow_up_count": "0",
+            "follow_up_policy": "ask_when_due",
+            "withdrawal_sent_date": "",
+        }
+
+        actions = self.engine.compute_actions([app])
+        candidates = self.engine.compute_manual_review_candidates([app])
+
+        self.assertEqual(actions, [])
+        self.assertEqual(
+            candidates,
+            [
+                {
+                    "mode": "manual_review",
+                    "type": "follow_up",
+                    "appl_id": "WUR-AIP-17",
+                    "company": "Acme",
+                    "role": "Engineer",
+                    "reason": "7d inactive — follow-up #1",
+                    "policy": "ask_when_due",
+                    "follow_up_n": 1,
+                }
+            ],
+        )
+
+    def test_ask_when_due_withdrawal_due_becomes_manual_review_candidate_only(self) -> None:
+        app = {
+            "appl_id": "WUR-AIP-18",
+            "company": "Beta",
+            "role": "Staff Engineer",
+            "status": "Applied",
+            "applied_date": "2026-03-20",
+            "last_activity_date": "",
+            "follow_up_sent_date": "",
+            "follow_up_count": "0",
+            "follow_up_policy": "disabled",
+            "withdraw_policy": "ask_when_due",
+            "withdrawal_sent_date": "",
+        }
+
+        actions = self.engine.compute_actions([app])
+        candidates = self.engine.compute_manual_review_candidates([app])
+
+        self.assertEqual(actions, [])
+        self.assertEqual(candidates[0]["type"], "withdraw")
+        self.assertEqual(candidates[0]["reason"], "Ghosted — 14d since last activity")
+        self.assertEqual(candidates[0]["policy"], "ask_when_due")
+
+    def test_ask_when_due_rejected_deletion_request_due_becomes_manual_review_candidate_only(self) -> None:
+        app = {
+            "appl_id": "WUR-AIP-19",
+            "company": "Gamma",
+            "role": "Data Engineer",
+            "status": "Rejected",
+            "applied_date": "2026-03-20",
+            "last_activity_date": "",
+            "follow_up_sent_date": "",
+            "follow_up_count": "0",
+            "deletion_request_policy": "ask_when_due",
+            "withdrawal_sent_date": "",
+            "deletion_request_sent_date": "",
+        }
+
+        actions = self.engine.compute_actions([app])
+        candidates = self.engine.compute_manual_review_candidates([app])
+
+        self.assertEqual(actions, [])
+        self.assertEqual(candidates[0]["type"], "deletion_request")
+        self.assertEqual(candidates[0]["reason"], "Rejected — 14d since last activity")
+        self.assertEqual(candidates[0]["policy"], "ask_when_due")
+
+    def test_disabled_policy_produces_neither_automatic_action_nor_manual_review_candidate(self) -> None:
+        app = {
+            "appl_id": "WUR-AIP-20",
+            "status": "Applied",
+            "applied_date": "2026-03-27",
+            "last_activity_date": "",
+            "follow_up_sent_date": "",
+            "follow_up_count": "0",
+            "follow_up_policy": "disabled",
+            "withdrawal_sent_date": "",
+        }
+
+        self.assertEqual(self.engine.compute_actions([app]), [])
+        self.assertEqual(self.engine.compute_manual_review_candidates([app]), [])
+
+    def test_enabled_policy_produces_automatic_action_not_manual_review_candidate(self) -> None:
+        app = {
+            "appl_id": "WUR-AIP-21",
+            "status": "Applied",
+            "applied_date": "2026-03-27",
+            "last_activity_date": "",
+            "follow_up_sent_date": "",
+            "follow_up_count": "0",
+            "follow_up_policy": "enabled",
+            "withdrawal_sent_date": "",
+        }
+
+        actions = self.engine.compute_actions([app])
+        candidates = self.engine.compute_manual_review_candidates([app])
+
+        self.assertEqual([action["type"] for action in actions], ["follow_up"])
+        self.assertEqual(candidates, [])
+
+    def test_explicit_ask_when_due_manual_review_overrides_legacy_opt_out_fields(self) -> None:
+        app = {
+            "appl_id": "WUR-AIP-22",
+            "status": "Applied",
+            "applied_date": "2026-03-27",
+            "last_activity_date": "",
+            "follow_up_sent_date": "",
+            "follow_up_count": "0",
+            "follow_up_opt_out": "yes",
+            "follow_up_policy": "ask_when_due",
+            "withdrawal_sent_date": "",
+        }
+
+        self.assertEqual(self.engine.compute_actions([app]), [])
+        self.assertEqual([candidate["type"] for candidate in self.engine.compute_manual_review_candidates([app])], ["follow_up"])
+
+    def test_deferred_rows_do_not_produce_manual_review_candidates(self) -> None:
+        app = {
+            "appl_id": "WUR-AIP-23",
+            "status": "Applied",
+            "applied_date": "2026-03-20",
+            "last_activity_date": "",
+            "follow_up_sent_date": "",
+            "follow_up_count": "0",
+            "follow_up_policy": "disabled",
+            "withdraw_policy": "ask_when_due",
+            "withdrawal_sent_date": "",
+            "deferred_until": "2026-04-04",
+        }
+
+        self.assertEqual(self.engine.compute_manual_review_candidates([app]), [])
+
+    def test_already_sent_actions_do_not_produce_manual_review_candidates(self) -> None:
+        apps = [
+            {
+                "appl_id": "WUR-AIP-24",
+                "status": "Applied",
+                "applied_date": "2026-03-20",
+                "last_activity_date": "",
+                "follow_up_sent_date": "",
+                "follow_up_count": "0",
+                "follow_up_policy": "disabled",
+                "withdraw_policy": "ask_when_due",
+                "withdrawal_sent_date": "2026-04-01",
+            },
+            {
+                "appl_id": "WUR-AIP-25",
+                "status": "Rejected",
+                "applied_date": "2026-03-20",
+                "last_activity_date": "",
+                "follow_up_sent_date": "",
+                "follow_up_count": "0",
+                "deletion_request_policy": "ask_when_due",
+                "withdrawal_sent_date": "",
+                "deletion_request_sent_date": "2026-04-01",
+            },
+        ]
+
+        self.assertEqual(self.engine.compute_manual_review_candidates(apps), [])
+
 
 if __name__ == "__main__":
     unittest.main()
