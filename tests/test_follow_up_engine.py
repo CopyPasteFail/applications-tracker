@@ -59,7 +59,7 @@ class FollowUpEngineTests(unittest.TestCase):
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0]["type"], "withdraw")
 
-    def test_interview_and_assessment_do_not_auto_withdraw_at_threshold(self) -> None:
+    def test_legacy_interview_and_assessment_inputs_auto_withdraw_as_active(self) -> None:
         apps = [
             {
                 "appl_id": "WUR-AIP-15",
@@ -83,7 +83,7 @@ class FollowUpEngineTests(unittest.TestCase):
 
         actions = self.engine.compute_actions(apps)
 
-        self.assertEqual([action["type"] for action in actions], ["follow_up", "follow_up"])
+        self.assertEqual([action["type"] for action in actions], ["withdraw", "withdraw"])
         self.assertEqual([action["app"]["appl_id"] for action in actions], ["WUR-AIP-15", "WUR-AIP-16"])
 
     def test_manual_withdraw_flag_queues_withdrawal_before_threshold(self) -> None:
