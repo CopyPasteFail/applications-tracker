@@ -321,7 +321,7 @@ Search by company or role, then choose an action:
 | `defer` or `d` | Skip until a future date. Accepts `7d`, `2w`, or `YYYY-MM-DD` |
 | `pause` or `p` | Remove from pipeline permanently until manually resumed |
 | `resume` or `r` | Clear deferral and set status back to Active |
-| `email` or `e` | Set or fix the contact email for follow-ups and withdrawals |
+| `email` or `e` | Set or fix the recruiter/contact email used for follow-ups |
 | `policy` or `o` | Control per-action policies for follow-up, withdrawal, and deletion-request drafting |
 | `withdraw` or `w` | Queue a manual withdrawal for the next digest, even if the normal withdrawal threshold has not passed yet |
 | `exit` or `c` | Exit without changing the application |
@@ -381,7 +381,8 @@ Columns are identified by header label, not by position. You can move columns ar
 | `recruiter_name` | Human sender name |
 | `recruiter_email` | Human sender email |
 | `ats_email` | ATS system email |
-| `contact_email` | Address used for follow-ups, withdrawal requests, and deletion requests |
+| `contact_email` | Address used for follow-ups and recruiter/contact routing |
+| `privacy_contact_email` | Preferred address used for withdrawal requests and deletion requests |
 | `follow_up_sent_date` | Date last follow-up was sent |
 | `follow_up_count` | Number of follow-ups sent |
 | `withdrawal_sent_date` | Date withdrawal was sent |

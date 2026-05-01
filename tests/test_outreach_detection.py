@@ -238,6 +238,30 @@ class OutreachDetectionTests(unittest.TestCase):
             "",
         )
 
+    def test_privacy_actions_prefer_privacy_contact_email(self) -> None:
+        app = {
+            "privacy_contact_email": "privacy@example.com",
+            "contact_email": "recruiting@example.com",
+            "recruiter_email": "recruiter@example.com",
+            "ats_email": "no-reply@ats.example.com",
+        }
+
+        self.assertEqual(resolve_outbound_target_email(app, "deletion_request"), "privacy@example.com")
+        self.assertEqual(resolve_outbound_target_email(app, "withdraw"), "privacy@example.com")
+
+    def test_outbound_resolver_still_supports_explicit_privacy_fallback_for_old_rows(self) -> None:
+        self.assertEqual(
+            resolve_outbound_target_email(
+                {
+                    "contact_email": "recruiting@example.com",
+                    "recruiter_email": "",
+                    "ats_email": "",
+                },
+                "withdraw",
+            ),
+            "recruiting@example.com",
+        )
+
     def test_privacy_scores_higher_for_deletion_than_follow_up(self) -> None:
         self.assertGreater(
             score_contact_email_for_action("privacy@example.com", "deletion_request"),

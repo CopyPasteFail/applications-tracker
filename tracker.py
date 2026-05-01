@@ -1611,6 +1611,7 @@ def resolve_outbound_target_email(app: ApplicationRecord, action_type: str) -> s
     - Best-effort recipient email address, or an empty string when no usable candidate exists.
 
     Edge cases:
+    - Privacy actions prefer `privacy_contact_email` when present.
     - `contact_email` and `recruiter_email` are preferred over ATS addresses.
     - Follow-ups never fall back to unusable no-reply mailboxes.
     - Withdrawals and deletion requests may still fall back to a usable ATS mailbox when no
@@ -1619,6 +1620,14 @@ def resolve_outbound_target_email(app: ApplicationRecord, action_type: str) -> s
     Atomicity / concurrency:
     - Pure helper with no shared mutable state.
     """
+    if action_type in {"withdraw", "deletion_request"}:
+        resolved_privacy_contact = choose_best_contact_email_for_action(
+            [extract_email_address(str(app.get("privacy_contact_email", "") or ""))],
+            action_type,
+        )
+        if resolved_privacy_contact:
+            return resolved_privacy_contact
+
     preferred_contacts = [
         extract_email_address(str(app.get("contact_email", "") or "")),
         extract_email_address(str(app.get("recruiter_email", "") or "")),
@@ -2753,7 +2762,10 @@ def merge_application_records(
     if preferred_role_title:
         merged_app["role"] = preferred_role_title
 
-    for field_name in ("company", "source", "recruiter_name", "recruiter_email", "ats_email", "contact_email", "draft_id", "linkedin_contact"):
+    for field_name in (
+        "company", "source", "recruiter_name", "recruiter_email", "ats_email",
+        "contact_email", "privacy_contact_email", "draft_id", "linkedin_contact",
+    ):
         if not merged_app.get(field_name) and secondary_app.get(field_name):
             merged_app[field_name] = secondary_app[field_name]
 
@@ -4288,7 +4300,7 @@ class GmailClient:
 COLUMNS = [
     "appl_id", "company", "role", "status", "source",
     "applied_date", "last_activity_date",
-    "recruiter_name", "recruiter_email", "ats_email", "contact_email",
+    "recruiter_name", "recruiter_email", "ats_email", "contact_email", "privacy_contact_email",
     "follow_up_sent_date", "follow_up_count", "withdrawal_sent_date", "deletion_request_sent_date",
     "withdraw_in_next_digest",
     "deferred_until",
@@ -7965,36 +7977,20 @@ class Tracker:
         action_type: str,
     ) -> tuple[str, bool]:
         """
-        For privacy-style actions, let the user explicitly keep the stored contact or
-        override it manually before automatic discovery runs.
+        For privacy-style actions, use only a stored privacy recipient automatically.
+        Missing privacy recipients should continue through explicit privacy search/fallback UX.
         """
         if action_type not in {"withdraw", "deletion_request"}:
             return "", False
 
-        existing_email = resolve_outbound_target_email(app, action_type)
+        existing_email = choose_best_contact_email_for_action(
+            [extract_email_address(str(app.get("privacy_contact_email", "") or ""))],
+            action_type,
+        )
         if not existing_email:
-            return "", False
+            return "", True
 
-        company_name = str(app.get("company", "") or "").strip() or "Unknown company"
-        role_title = str(app.get("role", "") or "").strip() or "Unknown role"
-        console.print(
-            "  Privacy action recipient found on the row for "
-            f"[cyan]{company_name}[/cyan] — {role_title}: [green]{existing_email}[/green]"
-        )
-        console.print(
-            "  Choose: (Enter/u) use stored email  (m) set manual email  (s) search for privacy contact"
-        )
-
-        while True:
-            choice = Prompt.ask("  Select option", default="").strip().lower()
-            if choice in ("u", ""):
-                return existing_email, False
-            if choice == "m":
-                confirmed_email = self._confirm_email_value("")
-                return confirmed_email, False
-            if choice == "s":
-                return "", True
-            console.print("[red]  Choose u / m / s, or press Enter to use stored.[/red]")
+        return existing_email, False
 
     def _resolve_privacy_contact_after_search_choice(
         self,
@@ -8047,16 +8043,27 @@ class Tracker:
                 return self._confirm_email_value("")
             console.print("[red]  Choose u / m, or press Enter to use the available email.[/red]")
 
-    def _persist_resolved_contact_email(
+    def _persist_resolved_action_email(
         self,
         app: ApplicationRecord,
         resolved_email: str,
         action_type: str,
     ) -> None:
         """
-        Persist a resolved outbound contact email back into the application row.
+        Persist a resolved outbound action email back into the application row.
+
+        - `follow_up` persists to `contact_email`.
+        - `withdraw` and `deletion_request` persist to `privacy_contact_email`.
+        - Unusable outbound emails are ignored.
+        - Unknown action types are ignored.
         """
-        if action_type != "follow_up":
+        email_field_by_action = {
+            "follow_up": "contact_email",
+            "withdraw": "privacy_contact_email",
+            "deletion_request": "privacy_contact_email",
+        }
+        email_field_name = email_field_by_action.get(action_type)
+        if not email_field_name:
             return
         normalized_resolved_email = extract_email_address(resolved_email) or str(resolved_email or "").strip().lower()
         if not normalized_resolved_email:
@@ -8068,12 +8075,12 @@ class Tracker:
         if not appl_id:
             return
 
-        current_contact_email = extract_email_address(str(app.get("contact_email", "") or ""))
+        current_contact_email = extract_email_address(str(app.get(email_field_name, "") or ""))
         if current_contact_email == normalized_resolved_email:
             return
 
-        self.sheets.set_field(appl_id, "contact_email", normalized_resolved_email)
-        app["contact_email"] = normalized_resolved_email
+        self.sheets.set_field(appl_id, email_field_name, normalized_resolved_email)
+        app[email_field_name] = normalized_resolved_email
 
     def _confirm_email_value(self, initial_email: str) -> str:
         candidate_email = initial_email.strip().lower()
@@ -8125,17 +8132,13 @@ class Tracker:
 
             if "@" in choice:
                 confirmed_email = self._confirm_email_value(choice)
-                if action_type == "follow_up":
-                    self.sheets.set_field(app["appl_id"], "contact_email", confirmed_email)
-                    app["contact_email"] = confirmed_email
+                self._persist_resolved_action_email(app, confirmed_email, action_type=action_type)
                 app["recruiter_email"] = app.get("recruiter_email", "")
                 return confirmed_email, False, False
 
             if normalized_choice == "":
                 confirmed_email = self._confirm_email_value("")
-                if action_type == "follow_up":
-                    self.sheets.set_field(app["appl_id"], "contact_email", confirmed_email)
-                    app["contact_email"] = confirmed_email
+                self._persist_resolved_action_email(app, confirmed_email, action_type=action_type)
                 app["recruiter_email"] = app.get("recruiter_email", "")
                 return confirmed_email, False, False
 
@@ -8188,7 +8191,7 @@ class Tracker:
             log_progress=False,
         )
         if refreshed_target_email and not is_unusable_outbound_email(refreshed_target_email):
-            self._persist_resolved_contact_email(
+            self._persist_resolved_action_email(
                 current_application,
                 refreshed_target_email,
                 action_type=action_type,
@@ -9852,7 +9855,7 @@ class Tracker:
             if not contact:
                 contact = self._resolve_company_contact_email(app, atype, log_progress=True)
             if contact:
-                self._persist_resolved_contact_email(app, contact, action_type=atype)
+                self._persist_resolved_action_email(app, contact, action_type=atype)
             should_create_manual_draft = False
 
             if atype in ("withdraw", "deletion_request"):

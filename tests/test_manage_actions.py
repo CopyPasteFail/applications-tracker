@@ -253,26 +253,12 @@ class ManageActionTests(unittest.TestCase):
         )
         self.assertEqual(app["deletion_request_policy"], "disabled")
 
-    def test_persist_resolved_contact_email_skips_privacy_actions(self) -> None:
+    def test_persist_resolved_action_email_keeps_follow_up_contacts(self) -> None:
         tracker = Tracker.__new__(Tracker)
         tracker.sheets = Mock()
         app = {"appl_id": "app-1", "contact_email": ""}
 
-        tracker._persist_resolved_contact_email(
-            app,
-            "privacy@example.com",
-            action_type="deletion_request",
-        )
-
-        tracker.sheets.set_field.assert_not_called()
-        self.assertEqual(app["contact_email"], "")
-
-    def test_persist_resolved_contact_email_keeps_follow_up_contacts(self) -> None:
-        tracker = Tracker.__new__(Tracker)
-        tracker.sheets = Mock()
-        app = {"appl_id": "app-1", "contact_email": ""}
-
-        tracker._persist_resolved_contact_email(
+        tracker._persist_resolved_action_email(
             app,
             "recruiting@example.com",
             action_type="follow_up",
@@ -284,6 +270,73 @@ class ManageActionTests(unittest.TestCase):
             "recruiting@example.com",
         )
         self.assertEqual(app["contact_email"], "recruiting@example.com")
+
+    def test_persist_resolved_action_email_saves_deletion_request_to_privacy_contact(self) -> None:
+        tracker = Tracker.__new__(Tracker)
+        tracker.sheets = Mock()
+        app = {"appl_id": "app-1", "contact_email": ""}
+
+        tracker._persist_resolved_action_email(
+            app,
+            "privacy@example.com",
+            action_type="deletion_request",
+        )
+
+        tracker.sheets.set_field.assert_called_once_with(
+            "app-1",
+            "privacy_contact_email",
+            "privacy@example.com",
+        )
+        self.assertEqual(app["contact_email"], "")
+        self.assertEqual(app["privacy_contact_email"], "privacy@example.com")
+
+    def test_persist_resolved_action_email_saves_withdraw_to_privacy_contact(self) -> None:
+        tracker = Tracker.__new__(Tracker)
+        tracker.sheets = Mock()
+        app = {"appl_id": "app-1", "contact_email": "recruiting@example.com"}
+
+        tracker._persist_resolved_action_email(
+            app,
+            "legal@example.com",
+            action_type="withdraw",
+        )
+
+        tracker.sheets.set_field.assert_called_once_with(
+            "app-1",
+            "privacy_contact_email",
+            "legal@example.com",
+        )
+        self.assertEqual(app["contact_email"], "recruiting@example.com")
+        self.assertEqual(app["privacy_contact_email"], "legal@example.com")
+
+    def test_missing_privacy_email_manual_entry_persists_to_privacy_contact(self) -> None:
+        tracker = Tracker.__new__(Tracker)
+        tracker.sheets = Mock()
+        app = {
+            "appl_id": "app-1",
+            "company": "Acme",
+            "role": "Engineer",
+            "contact_email": "recruiter@acme.example",
+            "privacy_contact_email": "",
+        }
+
+        with patch("tracker.console.print"), patch(
+            "tracker.Prompt.ask",
+            side_effect=["privacy@acme.example", "y"],
+        ):
+            target, requested_manual_draft, should_skip_action = tracker._resolve_missing_email_action(
+                app,
+                "deletion_request",
+            )
+
+        self.assertEqual((target, requested_manual_draft, should_skip_action), ("privacy@acme.example", False, False))
+        tracker.sheets.set_field.assert_called_once_with(
+            "app-1",
+            "privacy_contact_email",
+            "privacy@acme.example",
+        )
+        self.assertEqual(app["contact_email"], "recruiter@acme.example")
+        self.assertEqual(app["privacy_contact_email"], "privacy@acme.example")
 
     def test_explicit_privacy_search_rejects_generic_contacts(self) -> None:
         tracker = Tracker.__new__(Tracker)
@@ -326,6 +379,126 @@ class ManageActionTests(unittest.TestCase):
         tracker._resolve_company_contact_email.assert_called_once_with(
             app,
             "deletion_request",
+            log_progress=True,
+            allow_stored_recipient=False,
+            privacy_only=True,
+        )
+
+    def test_digest_privacy_action_with_privacy_contact_uses_it_without_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pending_path = Path(temp_dir) / "pending_actions.json"
+            tracker = self._digest_tracker_with_pending_path(pending_path)
+            app = {
+                "appl_id": "WUR-AIP-23",
+                "company": "Acme",
+                "role": "Engineer",
+                "contact_email": "recruiter@acme.example",
+                "privacy_contact_email": "privacy@acme.example",
+            }
+            action = {
+                "type": "deletion_request",
+                "app": app,
+                "reason": "Rejected - privacy cleanup",
+            }
+            tracker.sheets.get_all.return_value = [app]
+            tracker.engine.compute_actions.return_value = [action]
+            tracker.engine.compute_manual_review_candidates.return_value = []
+            tracker._resolve_privacy_contact_after_search_choice = Mock(
+                side_effect=AssertionError("privacy contact should already be resolved")
+            )
+            tracker._resolve_company_contact_email = Mock(
+                side_effect=AssertionError("fallback resolver should not run")
+            )
+            tracker._resolve_missing_email_action = Mock(
+                side_effect=AssertionError("manual missing-email prompt should not run")
+            )
+            tracker.ai.generate_deletion_request.return_value = ("Delete data", "Please delete my data")
+            tracker.gmail.create_draft.return_value = "draft-privacy"
+
+            with patch("tracker.PENDING_PATH", pending_path), patch("tracker.console.print"), patch(
+                "tracker.Prompt.ask",
+                side_effect=AssertionError("prompt should not run"),
+            ):
+                tracker.run_digest_only()
+
+            tracker.gmail.create_draft.assert_called_once_with(
+                "privacy@acme.example",
+                "Delete data",
+                "Please delete my data",
+                from_addr="omer@example.com",
+            )
+            self.assertEqual(app["contact_email"], "recruiter@acme.example")
+            self.assertEqual(app["privacy_contact_email"], "privacy@acme.example")
+
+    def test_digest_privacy_action_without_privacy_contact_prompts_before_contact_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pending_path = Path(temp_dir) / "pending_actions.json"
+            tracker = self._digest_tracker_with_pending_path(pending_path)
+            app = {
+                "appl_id": "WUR-AIP-24",
+                "company": "Acme",
+                "role": "Engineer",
+                "contact_email": "recruiter@acme.example",
+                "privacy_contact_email": "",
+            }
+            action = {
+                "type": "deletion_request",
+                "app": app,
+                "reason": "Rejected - privacy cleanup",
+            }
+            tracker.sheets.get_all.return_value = [app]
+            tracker.engine.compute_actions.return_value = [action]
+            tracker.engine.compute_manual_review_candidates.return_value = []
+            tracker._resolve_privacy_contact_after_search_choice = Mock(return_value="privacy@acme.example")
+            tracker._resolve_company_contact_email = Mock(
+                side_effect=AssertionError("contact fallback should wait for explicit privacy path")
+            )
+            tracker._resolve_missing_email_action = Mock(
+                side_effect=AssertionError("target email should be resolved by privacy path")
+            )
+            tracker.ai.generate_deletion_request.return_value = ("Delete data", "Please delete my data")
+            tracker.gmail.create_draft.return_value = "draft-privacy"
+
+            with patch("tracker.PENDING_PATH", pending_path), patch("tracker.console.print"):
+                tracker.run_digest_only()
+
+            tracker._resolve_privacy_contact_after_search_choice.assert_called_once_with(
+                app,
+                "deletion_request",
+            )
+            tracker.sheets.set_field.assert_any_call(
+                "WUR-AIP-24",
+                "privacy_contact_email",
+                "privacy@acme.example",
+            )
+            tracker.gmail.create_draft.assert_called_once_with(
+                "privacy@acme.example",
+                "Delete data",
+                "Please delete my data",
+                from_addr="omer@example.com",
+            )
+            self.assertEqual(app["contact_email"], "recruiter@acme.example")
+            self.assertEqual(app["privacy_contact_email"], "privacy@acme.example")
+
+    def test_privacy_search_skip_can_explicitly_fallback_to_contact_email(self) -> None:
+        tracker = Tracker.__new__(Tracker)
+        tracker._resolve_company_contact_email = Mock(return_value="")
+        app = {
+            "company": "Acme",
+            "role": "Engineer",
+            "privacy_contact_email": "",
+            "contact_email": "recruiter@acme.example",
+            "recruiter_email": "",
+            "ats_email": "",
+        }
+
+        with patch("tracker.console.print"), patch("tracker.Prompt.ask", return_value=""):
+            contact = tracker._resolve_privacy_contact_after_search_choice(app, "withdraw")
+
+        self.assertEqual(contact, "recruiter@acme.example")
+        tracker._resolve_company_contact_email.assert_called_once_with(
+            app,
+            "withdraw",
             log_progress=True,
             allow_stored_recipient=False,
             privacy_only=True,
@@ -388,7 +561,7 @@ class ManageActionTests(unittest.TestCase):
             tracker.engine.compute_manual_review_candidates.return_value = []
             tracker._choose_existing_or_manual_privacy_contact = Mock(return_value=("recruiter@example.com", False))
             tracker._resolve_company_contact_email = Mock(side_effect=AssertionError("contact should already be resolved"))
-            tracker._persist_resolved_contact_email = Mock()
+            tracker._persist_resolved_action_email = Mock()
             tracker._resolve_missing_email_action = Mock(side_effect=AssertionError("target email should exist"))
             tracker.ai.generate_follow_up.return_value = ("Checking in", "Hello")
             tracker.gmail.create_draft.return_value = "draft-1"
@@ -442,7 +615,7 @@ class ManageActionTests(unittest.TestCase):
             tracker.engine.compute_manual_review_candidates.return_value = [candidate]
             tracker._choose_existing_or_manual_privacy_contact = Mock(return_value=("recruiter@example.com", False))
             tracker._resolve_company_contact_email = Mock(return_value="recruiter@example.com")
-            tracker._persist_resolved_contact_email = Mock()
+            tracker._persist_resolved_action_email = Mock()
             tracker._resolve_missing_email_action = Mock(side_effect=AssertionError("target email should exist"))
             tracker.ai.generate_follow_up.return_value = ("Checking in", "Hello")
             tracker.gmail.create_draft.return_value = "draft-1"

@@ -182,6 +182,20 @@ class SheetStatusMigrationTests(unittest.TestCase):
         self.assertEqual(written_rows, loaded_rows)
         client._write_rows.assert_called_once()
 
+    def test_normalize_rows_adds_privacy_contact_email_to_old_sheets(self) -> None:
+        rows = [
+            ["appl_id", "status", "contact_email"],
+            ["A1", "Active", "recruiting@example.com"],
+        ]
+
+        normalized_rows = SheetsClient._normalize_rows(rows)
+        headers = normalized_rows[0]
+
+        self.assertIn("privacy_contact_email", COLUMNS)
+        self.assertIn("privacy_contact_email", headers)
+        self.assertEqual(normalized_rows[1][headers.index("contact_email")], "recruiting@example.com")
+        self.assertEqual(normalized_rows[1][headers.index("privacy_contact_email")], "")
+
     def test_normalize_rows_keeps_explicit_deletion_policy_over_legacy_opt_out(self) -> None:
         rows = [
             ["appl_id", "status", "deletion_request_opt_out", "deletion_request_policy"],
