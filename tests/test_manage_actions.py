@@ -519,6 +519,7 @@ class ManageActionTests(unittest.TestCase):
                 "Delete data",
                 "Please delete my data",
                 from_addr="omer@example.com",
+                from_name="Omer",
             )
             self.assertEqual(app["contact_email"], "recruiter@acme.example")
             self.assertEqual(app["privacy_contact_email"], "privacy@acme.example")
@@ -570,6 +571,7 @@ class ManageActionTests(unittest.TestCase):
                 "Delete data",
                 "Please delete my data",
                 from_addr="omer@example.com",
+                from_name="Omer",
             )
             self.assertEqual(app["contact_email"], "recruiter@acme.example")
             self.assertEqual(app["privacy_contact_email"], "")
@@ -670,6 +672,7 @@ class ManageActionTests(unittest.TestCase):
                 "Checking in",
                 "Hello",
                 from_addr="omer@example.com",
+                from_name="Omer",
             )
             pending = json.loads(pending_path.read_text(encoding="utf-8"))
             self.assertEqual(len(pending), 1)
