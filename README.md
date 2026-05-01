@@ -367,6 +367,8 @@ If a template file is missing, Gemini generates the email body as a fallback.
 
 ## Google Sheets columns
 
+Columns are identified by header label, not by position. You can move columns around in the Sheet as long as the header names below stay unchanged.
+
 | Column | Description |
 |---|---|
 | `appl_id` | Short unique ID |
@@ -415,6 +417,8 @@ For manage operations directly in the Sheet without opening a terminal:
 3. Reload the Sheet — a **Job Tracker** menu appears in the toolbar
 
 Select any row, then use the menu to defer, pause, resume, set a contact email, change status, or add a LinkedIn application.
+
+The Apps Script menu also resolves columns by header label, so it keeps working if you reorder columns. Keep the header row labels unchanged; legacy `app_id` is accepted as an alias for `appl_id`.
 
 ---
 

@@ -136,6 +136,50 @@ class SheetStatusMigrationTests(unittest.TestCase):
         self.assertEqual(loaded_rows[1][loaded_rows[0].index("status")], "Active")
         client._write_rows.assert_not_called()
 
+    def test_upsert_many_uses_appl_id_header_when_columns_move(self) -> None:
+        rows = [
+            ["company", "appl_id", "status", "notes"],
+            ["Old Co", "APP-1", "Active", "keep"],
+        ]
+        client = SheetsClient.__new__(SheetsClient)
+        client._load_sheet_rows = Mock(return_value=rows)
+        client._write_rows = Mock()
+
+        client.upsert_many([
+            {
+                "appl_id": "APP-1",
+                "company": "New Co",
+                "status": "Rejected",
+                "notes": "updated",
+            }
+        ])
+
+        written_rows = client._write_rows.call_args.args[0]
+        headers = written_rows[0]
+        updated_row = dict(zip(headers, written_rows[1]))
+        self.assertEqual(headers[:4], ["company", "appl_id", "status", "notes"])
+        self.assertEqual(updated_row["company"], "New Co")
+        self.assertEqual(updated_row["appl_id"], "APP-1")
+        self.assertEqual(updated_row["status"], "Rejected")
+        self.assertEqual(updated_row["notes"], "updated")
+
+    def test_set_field_uses_appl_id_header_when_columns_move(self) -> None:
+        rows = [
+            ["company", "appl_id", "status", "notes"],
+            ["Acme", "APP-1", "Active", ""],
+        ]
+        client = SheetsClient.__new__(SheetsClient)
+        client._load_sheet_rows = Mock(return_value=rows)
+        client.ws = Mock()
+        client._execute_with_retry = Mock(side_effect=lambda _name, operation: operation())
+
+        client.set_field("APP-1", "status", "Rejected")
+
+        client.ws.update.assert_called_once_with(
+            range_name="C2",
+            values=[["Rejected"]],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

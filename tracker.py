@@ -19,7 +19,7 @@ Usage:
   python tracker.py --resume-run ID   # resume a saved AI grouping run after a fail-closed abort
 """
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 import json
 import uuid
@@ -4866,16 +4866,17 @@ class SheetsClient:
 
         rows = self._normalize_rows(self._load_sheet_rows())
         headers = rows[0]
+        appl_id_column_index = headers.index("appl_id")
         appl_id_to_row_index: dict[str, int] = {}
         for row_index, row in enumerate(rows[1:], start=1):
-            appl_id_value = row[0].strip() if row else ""
+            appl_id_value = row[appl_id_column_index].strip() if appl_id_column_index < len(row) else ""
             if appl_id_value:
                 appl_id_to_row_index[appl_id_value] = row_index
 
         for app in apps:
             normalized_app = self._populate_derived_application_fields(app)
             values = [str(normalized_app.get(column_name, "") or "") for column_name in headers]
-            appl_id = values[0]
+            appl_id = values[appl_id_column_index]
             if appl_id in appl_id_to_row_index:
                 rows[appl_id_to_row_index[appl_id]] = values
             else:
@@ -4893,7 +4894,11 @@ class SheetsClient:
             console.print(f"[yellow]Sheet field '{field}' not found. Skipping update for {appl_id}.[/yellow]")
             return
         col_i = headers.index(field) + 1
-        appl_ids = [r[0] for r in rows[1:]]
+        appl_id_column_index = headers.index("appl_id")
+        appl_ids = [
+            r[appl_id_column_index] if appl_id_column_index < len(r) else ""
+            for r in rows[1:]
+        ]
         if appl_id in appl_ids:
             row_number = appl_ids.index(appl_id) + 2
             cell_range = f"{self._column_letter(col_i)}{row_number}"

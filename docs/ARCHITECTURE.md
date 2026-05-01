@@ -6,6 +6,8 @@ This document captures the durable runtime boundaries for the tracker. It is the
 
 - `tracker.py` owns CLI orchestration, Gmail and Sheets I/O, draft creation, template rendering, contact discovery, digest execution flow, and compatibility imports that preserve the public entry points.
 - `tracker_actions.py` owns `FollowUpEngine` plus the pure action-planning, status, lifecycle, and policy helpers.
+- Google Sheets columns are resolved by header label rather than fixed position. Users may reorder columns as long as the labels remain unchanged; `app_id` remains a compatibility alias for `appl_id`.
+- `JobTracker.js` follows the same header-label contract for the in-Sheet Apps Script menu.
 
 ## Status And Policy Model
 

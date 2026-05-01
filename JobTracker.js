@@ -4,41 +4,6 @@
 
 const SHEET_NAME = "Applications";
 
-const COL = {
-  app_id:               1,
-  company:              2,
-  role:                 3,
-  status:               4,
-  source:               5,
-  applied_date:         6,
-  last_activity_date:   7,
-  recruiter_name:       8,
-  recruiter_email:      9,
-  ats_email:            10,
-  contact_email:        11,
-  follow_up_sent_date:  12,
-  follow_up_count:      13,
-  withdrawal_sent_date: 14,
-  deletion_request_sent_date: 15,
-  follow_up_opt_out:    16,
-  deletion_request_opt_out: 17,
-  follow_up_missing_email_policy: 18,
-  withdraw_missing_email_policy: 19,
-  deletion_request_missing_email_policy: 20,
-  withdraw_in_next_digest: 21,
-  deferred_until:       22,
-  notes:                23,
-  linkedin_contact:     24,
-  email_ids:            25,
-  thread_ids:           26,
-  internet_message_ids: 27,
-  gmail_review_url:     28,
-  draft_id:             29,
-  follow_up_policy:     30,
-  withdraw_policy:      31,
-  deletion_request_policy: 32,
-};
-
 // ── Menu ──────────────────────────────────────────────────────────────────────
 
 function onOpen() {
@@ -62,6 +27,35 @@ function getSheet() {
   return ss.getSheetByName(SHEET_NAME);
 }
 
+function getColumnMap() {
+  const sheet = getSheet();
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const columns = {};
+  headers.forEach((header, index) => {
+    const normalizedHeader = String(header || "").trim();
+    if (normalizedHeader) {
+      columns[normalizedHeader] = index + 1;
+    }
+  });
+  if (columns.app_id && !columns.appl_id) {
+    columns.appl_id = columns.app_id;
+  }
+  return columns;
+}
+
+function getColumnNumber(colName) {
+  const columns = getColumnMap();
+  return getColumnNumberFromMap(columns, colName);
+}
+
+function getColumnNumberFromMap(columns, colName) {
+  const columnNumber = columns[colName];
+  if (!columnNumber) {
+    throw new Error(`Missing required column: ${colName}`);
+  }
+  return columnNumber;
+}
+
 function getSelectedRow() {
   const sheet = getSheet();
   const row   = sheet.getActiveRange().getRow();
@@ -73,15 +67,15 @@ function getSelectedRow() {
 }
 
 function getCell(row, colName) {
-  return getSheet().getRange(row, COL[colName]);
+  return getSheet().getRange(row, getColumnNumber(colName));
 }
 
 function getCellValue(row, colName) {
-  return getSheet().getRange(row, COL[colName]).getValue();
+  return getSheet().getRange(row, getColumnNumber(colName)).getValue();
 }
 
 function setCellValue(row, colName, value) {
-  getSheet().getRange(row, COL[colName]).setValue(value);
+  getSheet().getRange(row, getColumnNumber(colName)).setValue(value);
 }
 
 function rowSummary(row) {
@@ -233,19 +227,20 @@ function menuAddLinkedin() {
 
   const today    = formatDate(new Date());
   const sheet    = getSheet();
+  const columns  = getColumnMap();
   const newAppId = Utilities.getUuid().substring(0, 8);
 
-  const row = new Array(Object.keys(COL).length).fill("");
-  row[COL.app_id             - 1] = newAppId;
-  row[COL.company            - 1] = company.getResponseText().trim();
-  row[COL.role               - 1] = role.getResponseText().trim();
-  row[COL.status             - 1] = "Active";
-  row[COL.source             - 1] = "linkedin";
-  row[COL.applied_date       - 1] = today;
-  row[COL.last_activity_date - 1] = today;
-  row[COL.follow_up_count    - 1] = 0;
-  row[COL.linkedin_contact   - 1] = contact.getResponseText().trim();
-  row[COL.email_ids          - 1] = "[]";
+  const row = new Array(sheet.getLastColumn()).fill("");
+  row[getColumnNumberFromMap(columns, "appl_id")             - 1] = newAppId;
+  row[getColumnNumberFromMap(columns, "company")             - 1] = company.getResponseText().trim();
+  row[getColumnNumberFromMap(columns, "role")                - 1] = role.getResponseText().trim();
+  row[getColumnNumberFromMap(columns, "status")              - 1] = "Active";
+  row[getColumnNumberFromMap(columns, "source")              - 1] = "linkedin";
+  row[getColumnNumberFromMap(columns, "applied_date")        - 1] = today;
+  row[getColumnNumberFromMap(columns, "last_activity_date")  - 1] = today;
+  row[getColumnNumberFromMap(columns, "follow_up_count")     - 1] = 0;
+  row[getColumnNumberFromMap(columns, "linkedin_contact")    - 1] = contact.getResponseText().trim();
+  row[getColumnNumberFromMap(columns, "email_ids")           - 1] = "[]";
 
   sheet.appendRow(row);
   ui.alert(`Added: ${company.getResponseText().trim()} — ${role.getResponseText().trim()}`);
