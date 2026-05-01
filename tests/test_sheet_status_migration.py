@@ -57,6 +57,30 @@ class SheetStatusMigrationTests(unittest.TestCase):
             2,
         )
 
+    def test_migrate_statuses_to_lifecycle_counts_changed_legacy_statuses(self) -> None:
+        rows = [
+            ["appl_id", "status", "notes"],
+            ["A1", "Applied", "legacy applied"],
+            ["A2", "Interview", "legacy interview"],
+            ["A3", "Rejected", "already lifecycle"],
+            ["A4", "", "blank legacy"],
+        ]
+        client = SheetsClient.__new__(SheetsClient)
+        client.ws = Mock()
+        client.ws.get_all_values.return_value = rows
+        client._execute_with_retry = Mock(side_effect=lambda _name, operation: operation())
+        client._write_rows = Mock()
+
+        changed_count = client.migrate_statuses_to_lifecycle()
+
+        self.assertEqual(changed_count, 3)
+        written_rows = client._write_rows.call_args.args[0]
+        status_index = written_rows[0].index("status")
+        self.assertEqual(
+            [row[status_index] for row in written_rows[1:]],
+            ["Active", "Active", "Rejected", "Active"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

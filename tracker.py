@@ -4721,7 +4721,12 @@ class SheetsClient:
 
         Returns the number of data rows whose status value changed.
         """
-        rows = self._load_sheet_rows()
+        rows = cast(list[list[str]], self._execute_with_retry(
+            "read worksheet values",
+            lambda: self.ws.get_all_values(),
+        ))
+        if not rows:
+            rows = [list(COLUMNS)]
         normalized_rows = self._normalize_rows(rows)
         status_column_index = normalized_rows[0].index("status")
         changed_count = 0
