@@ -1,7 +1,7 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from tracker import AIGrouper
+from tracker import AIGrouper, Tracker
 
 
 class RejectionDeferResetTests(unittest.TestCase):
@@ -198,6 +198,89 @@ class RejectionDeferResetTests(unittest.TestCase):
         self.assertEqual(result.updates[0]["appl_id"], "CSR-SPE-1")
         self.assertEqual(result.updates[0]["status"], "Rejected")
         self.assertEqual(result.updates[0]["deferred_until"], "")
+
+    def test_rejection_signal_advances_paused_application_to_rejected(self) -> None:
+        grouper = self._build_grouper()
+        new_email = {
+            "id": "msg-4",
+            "thread_id": "thread-paused-1",
+            "internet_message_id": "<msg-4@example.com>",
+            "from": "Recruiting <notifications@example.greenhouse.io>",
+            "subject": "Update on your application",
+            "snippet": "We decided to move forward with other candidates.",
+            "body": "Unfortunately, we decided to move forward with other candidates.",
+            "date": "Mon, 13 Apr 2026 10:05:41 +0300",
+        }
+        existing_app = {
+            "appl_id": "PAU-APP-1",
+            "company": "Paused Co",
+            "role": "Backend Engineer",
+            "status": "Paused",
+            "source": "email",
+            "applied_date": "2026-03-16",
+            "last_activity_date": "2026-03-23",
+            "recruiter_name": "",
+            "recruiter_email": "",
+            "ats_email": "",
+            "contact_email": "",
+            "follow_up_sent_date": "",
+            "follow_up_count": "0",
+            "withdrawal_sent_date": "",
+            "deletion_request_sent_date": "",
+            "deletion_request_opt_out": "",
+            "follow_up_missing_email_policy": "",
+            "withdraw_missing_email_policy": "",
+            "deletion_request_missing_email_policy": "",
+            "deferred_until": "2026-04-30",
+            "notes": "",
+            "linkedin_contact": "",
+            "email_ids": "[]",
+            "thread_ids": "[\"thread-paused-1\"]",
+            "internet_message_ids": "[]",
+            "gmail_review_url": "",
+            "draft_id": "",
+        }
+
+        with patch.object(
+            grouper,
+            "inspect_group_emails",
+            return_value={
+                "results": [
+                    {
+                        "action": "ignore",
+                        "email_id": "msg-4",
+                        "extracted": {
+                            "company": "",
+                            "role": "",
+                            "status": "",
+                        },
+                    }
+                ],
+                "missing_email_ids": [],
+                "duplicate_email_ids": [],
+                "unexpected_email_ids": [],
+            },
+        ):
+            result = grouper.group_emails([new_email], [existing_app])
+
+        self.assertEqual(len(result.updates), 1)
+        self.assertEqual(result.updates[0]["status"], "Rejected")
+        self.assertEqual(result.updates[0]["deferred_until"], "")
+
+    def test_status_backfill_advances_paused_application_to_rejected(self) -> None:
+        tracker = Tracker.__new__(Tracker)
+        tracker._find_best_related_status = Mock(return_value="Rejected")
+        app = {
+            "appl_id": "PAU-APP-2",
+            "status": "Paused",
+            "source": "email",
+            "deferred_until": "2026-04-30",
+        }
+
+        result = tracker._backfill_statuses_from_gmail([app], base_query="label:jobs")
+
+        self.assertEqual(result[0]["status"], "Rejected")
+        self.assertEqual(result[0]["deferred_until"], "")
 
 
 if __name__ == "__main__":

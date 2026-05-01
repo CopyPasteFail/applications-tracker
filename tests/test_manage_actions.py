@@ -409,6 +409,42 @@ class ManageActionTests(unittest.TestCase):
             ]
             self.assertTrue(any("Manual Review" in table.title for table in printed_tables))
 
+    def test_confirm_skips_stale_withdraw_when_current_status_is_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pending_path = Path(temp_dir) / "pending_actions.json"
+            pending_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "type": "withdraw",
+                            "appl_id": "WUR-AIP-30",
+                            "company": "Acme",
+                            "role": "Engineer",
+                            "target_email": "privacy@acme.example",
+                            "subject": "Withdrawal",
+                            "draft_id": "draft-30",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            tracker = self._digest_tracker_with_pending_path(pending_path)
+            tracker.sheets.get_all.return_value = [
+                {
+                    "appl_id": "WUR-AIP-30",
+                    "status": "Rejected",
+                }
+            ]
+
+            with patch("tracker.PENDING_PATH", pending_path), patch("tracker.Confirm.ask", return_value=True), patch(
+                "tracker.console.print"
+            ):
+                tracker.confirm()
+
+            tracker.gmail.send_draft.assert_not_called()
+            tracker.sheets.set_field.assert_not_called()
+            self.assertEqual(json.loads(pending_path.read_text(encoding="utf-8")), [])
+
 
 if __name__ == "__main__":
     unittest.main()

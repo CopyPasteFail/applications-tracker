@@ -2760,7 +2760,7 @@ def merge_application_records(
 
     primary_status = normalize_application_status(primary_app.get("status"))
     secondary_status = normalize_application_status(secondary_app.get("status"))
-    if primary_status == "Active" and secondary_status != "Active":
+    if not is_terminal_application_status(primary_status) and is_terminal_application_status(secondary_status):
         merged_app["status"] = secondary_status
     else:
         merged_app["status"] = primary_status
@@ -6175,7 +6175,7 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
                 updated_existing_application_ids.add(aid)
                 current_status = normalize_application_status(base.get("status"))
                 new_status = normalize_application_status(extracted_status)
-                if current_status == "Active" and new_status != "Active":
+                if not is_terminal_application_status(current_status) and is_terminal_application_status(new_status):
                     base["status"] = new_status
                 else:
                     base["status"] = current_status
@@ -8210,6 +8210,30 @@ class Tracker:
 
         return "", "no usable recipient found after revalidation"
 
+    def _pending_withdraw_is_stale(self, pending_action: PendingActionRecord) -> tuple[bool, str]:
+        """
+        Return whether a queued withdrawal no longer matches the current sheet row state.
+        """
+        appl_id = str(pending_action.get("appl_id", "") or "").strip()
+        if not appl_id:
+            return True, "missing appl_id on pending withdrawal"
+
+        current_application = next(
+            (
+                application
+                for application in self.sheets.get_all()
+                if str(application.get("appl_id", "") or "").strip() == appl_id
+            ),
+            None,
+        )
+        if current_application is None:
+            return True, "application row no longer exists"
+
+        current_status = normalize_application_status(current_application.get("status"))
+        if current_status != "Active":
+            return True, f"current status is {current_status}"
+        return False, ""
+
     def _find_best_related_role_title(
         self,
         application_row: ApplicationRecord,
@@ -8389,14 +8413,14 @@ class Tracker:
         )
 
         current_status = normalize_application_status(application_row.get("status"))
-        if current_status != "Active":
+        if is_terminal_application_status(current_status):
             return ""
 
         for related_message in related_messages:
             candidate_status = normalize_application_status(
                 extract_status_from_email_message(related_message)
             )
-            if candidate_status in {"Rejected", "Offer"}:
+            if is_terminal_application_status(candidate_status):
                 return candidate_status
         return ""
 
@@ -8447,8 +8471,10 @@ class Tracker:
                 enriched_application_rows.append(normalized_application_row)
                 continue
 
-            if recovered_status and normalize_application_status(current_status) == "Active":
+            if recovered_status and not is_terminal_application_status(current_status):
                 normalized_application_row["status"] = normalize_application_status(recovered_status)
+                if should_clear_deferred_until_for_status(recovered_status):
+                    normalized_application_row["deferred_until"] = ""
                 recovered_status_count += 1
             enriched_application_rows.append(normalized_application_row)
 
@@ -9993,6 +10019,15 @@ class Tracker:
             if not a.get("draft_id"):
                 console.print(f"  [red]✗ {a['company']} — no draft ID, skipping[/red]")
                 continue
+
+            if a["type"] == "withdraw":
+                stale_withdraw, stale_reason = self._pending_withdraw_is_stale(a)
+                if stale_withdraw:
+                    console.print(
+                        f"  [yellow]↻ {a['company']} withdrawal is stale "
+                        f"({stale_reason}); skipping. Rerun --digest to recreate safely.[/yellow]"
+                    )
+                    continue
 
             validated_target_email, validation_problem = self._revalidate_pending_action_target_email(a)
             if not validated_target_email:
