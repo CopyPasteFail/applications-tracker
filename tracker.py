@@ -7975,28 +7975,54 @@ class Tracker:
         self,
         app: ApplicationRecord,
         action_type: str,
-    ) -> tuple[str, bool]:
+    ) -> tuple[str, bool, bool]:
         """
         For privacy-style actions, use only a stored privacy recipient automatically.
-        Missing privacy recipients should continue through explicit privacy search/fallback UX.
+        Missing privacy recipients require an explicit choice before using a normal stored recipient.
         """
         if action_type not in {"withdraw", "deletion_request"}:
-            return "", False
+            return "", False, False
 
-        existing_email = choose_best_contact_email_for_action(
+        existing_privacy_email = choose_best_contact_email_for_action(
             [extract_email_address(str(app.get("privacy_contact_email", "") or ""))],
             action_type,
         )
-        if not existing_email:
-            return "", True
+        if existing_privacy_email:
+            return existing_privacy_email, False, True
 
-        return existing_email, False
+        existing_email = resolve_outbound_target_email(app, action_type)
+        if not existing_email:
+            return "", True, False
+
+        company_name = str(app.get("company", "") or "").strip() or "Unknown company"
+        role_title = str(app.get("role", "") or "").strip() or "Unknown role"
+        console.print(
+            "  No stored privacy contact found for "
+            f"[cyan]{company_name}[/cyan] — {role_title}."
+        )
+        console.print(f"  Available recipient on the row: [green]{existing_email}[/green]")
+        console.print(
+            "  Choose: (Enter/u) use available email  "
+            "(m) set manual email  (s) search for privacy contact"
+        )
+
+        while True:
+            choice = Prompt.ask("  Select option", default="").strip().lower()
+            if choice in ("u", ""):
+                return existing_email, False, False
+            if choice == "m":
+                confirmed_email = self._confirm_email_value("")
+                self._persist_resolved_action_email(app, confirmed_email, action_type=action_type)
+                return confirmed_email, False, True
+            if choice == "s":
+                return "", True, False
+            console.print("[red]  Choose u / m / s, or press Enter to use the available email.[/red]")
 
     def _resolve_privacy_contact_after_search_choice(
         self,
         app: ApplicationRecord,
         action_type: str,
-    ) -> str:
+    ) -> tuple[str, bool]:
         """
         Run an explicit privacy-contact search, then re-prompt with the stored email if needed.
         """
@@ -8008,23 +8034,23 @@ class Tracker:
             privacy_only=True,
         )
         if discovered_privacy_contact:
-            return discovered_privacy_contact
+            return discovered_privacy_contact, True
         return self._prompt_for_privacy_contact_after_failed_search(app, action_type)
 
     def _prompt_for_privacy_contact_after_failed_search(
         self,
         app: ApplicationRecord,
         action_type: str,
-    ) -> str:
+    ) -> tuple[str, bool]:
         """
         After an explicit privacy search fails, offer the stored recipient or a manual override.
         """
         if action_type not in {"withdraw", "deletion_request"}:
-            return ""
+            return "", False
 
         existing_email = resolve_outbound_target_email(app, action_type)
         if not existing_email:
-            return ""
+            return "", False
 
         company_name = str(app.get("company", "") or "").strip() or "Unknown company"
         role_title = str(app.get("role", "") or "").strip() or "Unknown role"
@@ -8038,9 +8064,11 @@ class Tracker:
         while True:
             choice = Prompt.ask("  Select option", default="").strip().lower()
             if choice in ("u", ""):
-                return existing_email
+                return existing_email, False
             if choice == "m":
-                return self._confirm_email_value("")
+                confirmed_email = self._confirm_email_value("")
+                self._persist_resolved_action_email(app, confirmed_email, action_type=action_type)
+                return confirmed_email, True
             console.print("[red]  Choose u / m, or press Enter to use the available email.[/red]")
 
     def _persist_resolved_action_email(
@@ -9849,12 +9877,22 @@ class Tracker:
             )
 
             # Resolve target email
-            contact, should_search_privacy_contact = self._choose_existing_or_manual_privacy_contact(app, atype)
-            if should_search_privacy_contact:
-                contact = self._resolve_privacy_contact_after_search_choice(app, atype)
-            if not contact:
+            should_persist_resolved_contact = True
+            if atype in {"withdraw", "deletion_request"}:
+                contact, should_search_privacy_contact, should_persist_resolved_contact = (
+                    self._choose_existing_or_manual_privacy_contact(app, atype)
+                )
+                if should_search_privacy_contact:
+                    contact, should_persist_resolved_contact = self._resolve_privacy_contact_after_search_choice(
+                        app,
+                        atype,
+                    )
+            else:
+                contact = ""
+
+            if not contact and atype not in {"withdraw", "deletion_request"}:
                 contact = self._resolve_company_contact_email(app, atype, log_progress=True)
-            if contact:
+            if contact and should_persist_resolved_contact:
                 self._persist_resolved_action_email(app, contact, action_type=atype)
             should_create_manual_draft = False
 
