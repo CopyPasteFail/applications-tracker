@@ -1611,7 +1611,7 @@ def resolve_outbound_target_email(app: ApplicationRecord, action_type: str) -> s
     - Best-effort recipient email address, or an empty string when no usable candidate exists.
 
     Edge cases:
-    - Privacy actions prefer `privacy_contact_email` when present.
+    - Low-level privacy-action resolution prefers `privacy_contact_email` when present; the main digest flow only auto-uses that field before continuing through explicit privacy search/fallback UX.
     - `contact_email` and `recruiter_email` are preferred over ATS addresses.
     - Follow-ups never fall back to unusable no-reply mailboxes.
     - Withdrawals and deletion requests may still fall back to a usable ATS mailbox when no
