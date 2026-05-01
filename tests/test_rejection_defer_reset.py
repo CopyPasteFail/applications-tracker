@@ -30,7 +30,7 @@ class RejectionDeferResetTests(unittest.TestCase):
             "appl_id": "WAL-DIS-1",
             "company": "Walmart IL",
             "role": "Distinguished Engineer",
-            "status": "Applied",
+            "status": "Active",
             "source": "email",
             "applied_date": "2026-03-16",
             "last_activity_date": "2026-03-23",
@@ -111,7 +111,7 @@ class RejectionDeferResetTests(unittest.TestCase):
                         "extracted": {
                             "company": "Unknown",
                             "role": "Unknown",
-                            "status": "Applied",
+                            "status": "Active",
                         },
                     }
                 ],
@@ -146,7 +146,7 @@ class RejectionDeferResetTests(unittest.TestCase):
             "appl_id": "CSR-SPE-1",
             "company": "Client Server",
             "role": "Senior Platform Engineer AWS IaC",
-            "status": "Applied",
+            "status": "Active",
             "source": "email",
             "applied_date": "2026-03-20",
             "last_activity_date": "2026-03-26",

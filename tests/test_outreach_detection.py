@@ -117,6 +117,7 @@ class OutreachDetectionTests(unittest.TestCase):
             extract_scheduled_interview_date_from_email_message(message),
             "2026-03-20",
         )
+        self.assertEqual(extract_status_from_email_message(message), "Active")
 
     def test_linkedin_jobs_noreply_is_unusable_for_outbound_email(self) -> None:
         self.assertTrue(is_unusable_outbound_email("jobs-noreply@linkedin.com"))

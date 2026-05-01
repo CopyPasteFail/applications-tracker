@@ -2180,25 +2180,15 @@ def extract_status_from_email_message(email_message: GmailMessage) -> Optional[s
             ),
         ),
         (
-            "Interview",
+            "Active",
             (
                 r"\binterview\b",
                 r"\binterviews?\b",
                 r"\bhiring manager\b",
                 r"\bonsite\b",
-            ),
-        ),
-        (
-            "Assessment",
-            (
                 r"\bassessment\b",
                 r"\bcoding challenge\b",
                 r"\btake[- ]?home\b",
-            ),
-        ),
-        (
-            "Screening",
-            (
                 r"\bphone screen\b",
                 r"\brecruiter call\b",
                 r"\bscreening call\b",
@@ -2229,24 +2219,14 @@ def extract_status_from_email_message(email_message: GmailMessage) -> Optional[s
             ),
         ),
         (
-            "Interview",
+            "Active",
             (
                 r"\binterview\b",
                 r"\bvorstellungsgespr[äa]ch\b",
                 r"\bgespr[äa]chstermin\b",
-            ),
-        ),
-        (
-            "Assessment",
-            (
                 r"\baufgabe\b",
                 r"\btestaufgabe\b",
                 r"\bcoding[- ]?challenge\b",
-            ),
-        ),
-        (
-            "Screening",
-            (
                 r"\btelefoninterview\b",
                 r"\btelefonat\b",
                 r"\berstgespr[äa]ch\b",
@@ -2758,7 +2738,7 @@ def merge_application_records(
     - Merged application dictionary containing the richest combined data.
 
     Edge cases:
-    - Status only ever moves forward according to STATUS_RANK.
+    - Active rows can move to terminal lifecycle states without status ranking.
     - `email_ids`, `thread_ids`, and `internet_message_ids` are deduplicated even when
       malformed JSON appears in one record.
 
@@ -2780,8 +2760,10 @@ def merge_application_records(
 
     primary_status = normalize_application_status(primary_app.get("status"))
     secondary_status = normalize_application_status(secondary_app.get("status"))
-    if status_rank(secondary_status) > status_rank(primary_status):
+    if primary_status == "Active" and secondary_status != "Active":
         merged_app["status"] = secondary_status
+    else:
+        merged_app["status"] = primary_status
 
     candidate_applied_dates = [
         value
@@ -5703,11 +5685,14 @@ MATCHING RULES:
    Do not leave `role` as unknown when a specific job title is present.
 10. For `match_existing`, `appl_id` must be one of the exact `appl_id` values from EXISTING
     APPLICATIONS above. If no existing application matches, use `new_application` instead.
-11. Unsolicited recruiter outreach, sourcing, cold outreach, or job offers are NOT applications.
+11. Use status "Active" for submitted applications and all mid-pipeline progress such as
+    screening, recruiter calls, interviews, assessments, and coding challenges. Do not output
+    Screening, Interview, Assessment, or Applied as statuses.
+12. Unsolicited recruiter outreach, sourcing, cold outreach, or job offers are NOT applications.
     Examples: recruiter says they found the candidate on LinkedIn, wants to share an opportunity,
     asks whether the candidate would be interested, or invites the candidate to apply. These must
     be `ignore` unless the email clearly refers to an application the candidate already submitted.
-12. Respect the helper flags in each summary:
+13. Respect the helper flags in each summary:
     - `looks_like_unsolicited_outreach: true` strongly favors `ignore`
     - `has_strong_application_signal: true` strongly favors `match_existing` or `new_application`
 
@@ -5719,7 +5704,7 @@ For each email return one object with:
   extracted:
     company     : string
     role        : string
-    status      : "Applied"|"Screening"|"Interview"|"Assessment"|"Offer"|"Rejected"|null
+    status      : "Active"|"Offer"|"Rejected"|null
     sender_name : string
     sender_email: string (parse properly from "Name <email>" format)
     is_ats      : boolean
@@ -5907,12 +5892,11 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
             deterministic_scheduled_interview_date = extract_scheduled_interview_date_from_email_message(
                 message_record
             )
-            deterministic_has_interview_schedule_signal = has_interview_schedule_signal(message_record)
             deterministic_has_strong_application_signal = has_strong_application_signal(message_record)
             deterministic_is_unsolicited_outreach = is_unsolicited_recruiter_outreach_email(message_record)
             deterministic_last_activity_date = choose_latest_activity_date(
                 deterministic_sent_date_iso,
-                deterministic_scheduled_interview_date if deterministic_status == "Interview" else "",
+                deterministic_scheduled_interview_date,
             )
             deterministic_company_name = (
                 deterministic_company_from_message
@@ -6005,31 +5989,23 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
                 message_record.get("internet_message_id", "") or ""
             ).strip()
             deterministic_status = extract_status_from_email_message(message_record)
-            ai_extracted_status = str(ex.get("status") or "").strip()
+            ai_extracted_status = normalize_application_status(ex.get("status"))
             if sender_is_ats and deterministic_status:
-                extracted_status = deterministic_status
+                extracted_status = normalize_application_status(deterministic_status)
             else:
-                extracted_status = ai_extracted_status or deterministic_status or "Applied"
-                if (
-                    deterministic_status
-                    and status_rank(deterministic_status) > status_rank(extracted_status)
-                ):
-                    extracted_status = deterministic_status
+                deterministic_lifecycle_status = normalize_application_status(deterministic_status)
+                extracted_status = ai_extracted_status
+                if extracted_status == "Active" and deterministic_lifecycle_status != "Active":
+                    extracted_status = deterministic_lifecycle_status
             extracted_applied_date = (
                 str(ex.get("date_iso", "") or "").strip()
                 or deterministic_sent_date_iso
             )
             extracted_last_activity_date = choose_latest_activity_date(
                 extracted_applied_date,
-                deterministic_scheduled_interview_date if extracted_status == "Interview" else "",
+                deterministic_scheduled_interview_date,
                 deterministic_last_activity_date,
             )
-            if (
-                extracted_status == "Interview"
-                and deterministic_has_interview_schedule_signal
-                and not deterministic_scheduled_interview_date
-            ):
-                extracted_last_activity_date = extracted_applied_date or extracted_last_activity_date
             extracted_company_name = str(ex.get("company", "") or "").strip()
             if normalize_matching_text(extracted_company_name) in {"", "unknown"}:
                 extracted_company_name = deterministic_company_name or raw_sender_company_hint.title()
@@ -6058,7 +6034,7 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
             strongest_match_appl_id: Optional[str] = None
             if existing_thread_match_appl_id:
                 strongest_match_appl_id = existing_thread_match_appl_id
-                strongest_match_score = max(STATUS_RANK.values(), default=0) + 1
+                strongest_match_score = 1_000_000
             for existing_appl_id, existing_app in existing_apps_by_id.items():
                 merge_strength = get_application_merge_strength(existing_app, extracted_application)
                 if merge_strength > strongest_match_score:
@@ -6103,10 +6079,12 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
                 handled_message_ids.append(email_id)
                 matched_existing_email_count += 1
                 updated_existing_application_ids.add(aid)
-                # Advance status only, never go backwards
-                new_st = extracted_status
-                if new_st and status_rank(new_st) > status_rank(base.get("status")):
-                    base["status"] = normalize_application_status(new_st)
+                current_status = normalize_application_status(base.get("status"))
+                new_status = normalize_application_status(extracted_status)
+                if current_status == "Active" and new_status != "Active":
+                    base["status"] = new_status
+                else:
+                    base["status"] = current_status
                 if should_clear_deferred_until_for_status(extracted_status):
                     base["deferred_until"] = ""
                 extracted_role_title = extracted_role_name
@@ -6116,16 +6094,10 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
                 )
                 if preferred_role_title:
                     base["role"] = preferred_role_title
-                if extracted_status == "Interview" and deterministic_has_interview_schedule_signal:
-                    base["last_activity_date"] = (
-                        extracted_last_activity_date
-                        or str(base.get("last_activity_date", "") or "").strip()
-                    )
-                else:
-                    base["last_activity_date"] = choose_latest_activity_date(
-                        str(base.get("last_activity_date", "") or "").strip(),
-                        extracted_last_activity_date,
-                    ) or base.get("last_activity_date")
+                base["last_activity_date"] = choose_latest_activity_date(
+                    str(base.get("last_activity_date", "") or "").strip(),
+                    extracted_last_activity_date,
+                ) or base.get("last_activity_date")
                 extracted_sender_name = str(ex.get("sender_name", "") or "").strip()
                 sanitized_sender_name = (
                     ""
@@ -6209,16 +6181,10 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
                     )
                     if preferred_role_title:
                         existing_new["role"] = preferred_role_title
-                    if extracted_status == "Interview" and deterministic_has_interview_schedule_signal:
-                        existing_new["last_activity_date"] = (
-                            extracted_last_activity_date
-                            or existing_new.get("last_activity_date", "")
-                        )
-                    else:
-                        existing_new["last_activity_date"] = choose_latest_activity_date(
-                            str(existing_new.get("last_activity_date", "") or "").strip(),
-                            extracted_last_activity_date,
-                        ) or existing_new.get("last_activity_date", "")
+                    existing_new["last_activity_date"] = choose_latest_activity_date(
+                        str(existing_new.get("last_activity_date", "") or "").strip(),
+                        extracted_last_activity_date,
+                    ) or existing_new.get("last_activity_date", "")
                     # Update contact if human sender
                     extracted_sender_name = str(ex.get("sender_name", "") or "").strip()
                     sanitized_sender_name = (
@@ -8307,14 +8273,14 @@ class Tracker:
         base_query: str,
     ) -> str:
         """
-        Search related Gmail messages and recover the strongest status signal for one application.
+        Search related Gmail messages and recover a terminal status signal for one application.
 
         Inputs:
         - application_row: Existing or newly built application record that may need a status update.
         - base_query: Configured Gmail query used to keep the search within the user's job-mail corpus.
 
         Outputs:
-        - Strongest recovered status, or an empty string when no stronger status is found.
+        - Recovered terminal status, or an empty string when no lifecycle update is found.
 
         Edge cases:
         - Rows without company or contact signals return an empty string immediately.
@@ -8328,12 +8294,17 @@ class Tracker:
             base_query=base_query,
         )
 
-        strongest_status = normalize_application_status(application_row.get("status"))
+        current_status = normalize_application_status(application_row.get("status"))
+        if current_status != "Active":
+            return ""
+
         for related_message in related_messages:
-            candidate_status = extract_status_from_email_message(related_message)
-            if candidate_status and status_rank(candidate_status) > status_rank(strongest_status):
-                strongest_status = normalize_application_status(candidate_status)
-        return strongest_status if strongest_status != normalize_application_status(application_row.get("status")) else ""
+            candidate_status = normalize_application_status(
+                extract_status_from_email_message(related_message)
+            )
+            if candidate_status in {"Rejected", "Offer"}:
+                return candidate_status
+        return ""
 
     def _backfill_statuses_from_gmail(
         self,
@@ -8382,7 +8353,7 @@ class Tracker:
                 enriched_application_rows.append(normalized_application_row)
                 continue
 
-            if recovered_status and status_rank(recovered_status) > status_rank(current_status):
+            if recovered_status and normalize_application_status(current_status) == "Active":
                 normalized_application_row["status"] = normalize_application_status(recovered_status)
                 recovered_status_count += 1
             enriched_application_rows.append(normalized_application_row)

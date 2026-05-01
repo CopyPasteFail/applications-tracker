@@ -142,7 +142,7 @@ class SyncFailClosedTests(unittest.TestCase):
                         "appl_id": "APP-1",
                         "company": "Example",
                         "role": "Engineer",
-                        "status": "Applied",
+                        "status": "Active",
                         "source": "email",
                         "applied_date": "2026-04-16",
                         "last_activity_date": "2026-04-16",
