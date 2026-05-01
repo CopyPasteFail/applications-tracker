@@ -31,7 +31,7 @@ class FollowUpEngineTests(unittest.TestCase):
     def test_recent_follow_up_delays_withdrawal(self) -> None:
         app = {
             "appl_id": "WUR-AIP-1",
-            "status": "Applied",
+            "status": "Active",
             "applied_date": "2026-03-20",
             "last_activity_date": "2026-03-20",
             "follow_up_sent_date": "2026-04-02",
@@ -46,7 +46,7 @@ class FollowUpEngineTests(unittest.TestCase):
     def test_old_follow_up_allows_withdrawal_after_threshold(self) -> None:
         app = {
             "appl_id": "WUR-AIP-1",
-            "status": "Applied",
+            "status": "Active",
             "applied_date": "2026-03-01",
             "last_activity_date": "2026-03-20",
             "follow_up_sent_date": "2026-03-20",
@@ -89,7 +89,7 @@ class FollowUpEngineTests(unittest.TestCase):
     def test_manual_withdraw_flag_queues_withdrawal_before_threshold(self) -> None:
         app = {
             "appl_id": "WUR-AIP-2",
-            "status": "Applied",
+            "status": "Active",
             "applied_date": "2026-04-01",
             "last_activity_date": "2026-04-02",
             "follow_up_sent_date": "",
@@ -123,7 +123,7 @@ class FollowUpEngineTests(unittest.TestCase):
     def test_follow_up_opt_out_skips_follow_up_before_withdraw_threshold(self) -> None:
         app = {
             "appl_id": "WUR-AIP-4",
-            "status": "Applied",
+            "status": "Active",
             "applied_date": "2026-03-27",
             "last_activity_date": "",
             "follow_up_sent_date": "",
@@ -139,7 +139,7 @@ class FollowUpEngineTests(unittest.TestCase):
     def test_follow_up_opt_out_still_allows_withdrawal_at_threshold_from_applied_date(self) -> None:
         app = {
             "appl_id": "WUR-AIP-5",
-            "status": "Applied",
+            "status": "Active",
             "applied_date": "2026-03-20",
             "last_activity_date": "",
             "follow_up_sent_date": "",
@@ -209,7 +209,7 @@ class FollowUpEngineTests(unittest.TestCase):
     def test_follow_up_policy_disabled_suppresses_follow_up_but_not_withdrawal(self) -> None:
         follow_up_due_app = {
             "appl_id": "WUR-AIP-6",
-            "status": "Applied",
+            "status": "Active",
             "applied_date": "2026-03-27",
             "last_activity_date": "",
             "follow_up_sent_date": "",
@@ -219,7 +219,7 @@ class FollowUpEngineTests(unittest.TestCase):
         }
         withdraw_due_app = {
             "appl_id": "WUR-AIP-7",
-            "status": "Applied",
+            "status": "Active",
             "applied_date": "2026-03-20",
             "last_activity_date": "",
             "follow_up_sent_date": "",
@@ -236,7 +236,7 @@ class FollowUpEngineTests(unittest.TestCase):
     def test_withdraw_policy_disabled_suppresses_withdrawal_but_not_follow_up(self) -> None:
         follow_up_due_app = {
             "appl_id": "WUR-AIP-8",
-            "status": "Applied",
+            "status": "Active",
             "applied_date": "2026-03-27",
             "last_activity_date": "",
             "follow_up_sent_date": "",
@@ -246,7 +246,7 @@ class FollowUpEngineTests(unittest.TestCase):
         }
         withdraw_due_app = {
             "appl_id": "WUR-AIP-9",
-            "status": "Applied",
+            "status": "Active",
             "applied_date": "2026-03-20",
             "last_activity_date": "",
             "follow_up_sent_date": "",
@@ -282,7 +282,7 @@ class FollowUpEngineTests(unittest.TestCase):
         apps = [
             {
                 "appl_id": "WUR-AIP-11",
-                "status": "Applied",
+                "status": "Active",
                 "applied_date": "2026-03-27",
                 "last_activity_date": "",
                 "follow_up_sent_date": "",
@@ -292,7 +292,7 @@ class FollowUpEngineTests(unittest.TestCase):
             },
             {
                 "appl_id": "WUR-AIP-12",
-                "status": "Applied",
+                "status": "Active",
                 "applied_date": "2026-03-20",
                 "last_activity_date": "",
                 "follow_up_sent_date": "",
@@ -340,7 +340,7 @@ class FollowUpEngineTests(unittest.TestCase):
             "appl_id": "WUR-AIP-17",
             "company": "Acme",
             "role": "Engineer",
-            "status": "Applied",
+            "status": "Active",
             "applied_date": "2026-03-27",
             "last_activity_date": "",
             "follow_up_sent_date": "",
@@ -374,7 +374,7 @@ class FollowUpEngineTests(unittest.TestCase):
             "appl_id": "WUR-AIP-18",
             "company": "Beta",
             "role": "Staff Engineer",
-            "status": "Applied",
+            "status": "Active",
             "applied_date": "2026-03-20",
             "last_activity_date": "",
             "follow_up_sent_date": "",
@@ -418,7 +418,7 @@ class FollowUpEngineTests(unittest.TestCase):
     def test_disabled_policy_produces_neither_automatic_action_nor_manual_review_candidate(self) -> None:
         app = {
             "appl_id": "WUR-AIP-20",
-            "status": "Applied",
+            "status": "Active",
             "applied_date": "2026-03-27",
             "last_activity_date": "",
             "follow_up_sent_date": "",
@@ -433,7 +433,7 @@ class FollowUpEngineTests(unittest.TestCase):
     def test_enabled_policy_produces_automatic_action_not_manual_review_candidate(self) -> None:
         app = {
             "appl_id": "WUR-AIP-21",
-            "status": "Applied",
+            "status": "Active",
             "applied_date": "2026-03-27",
             "last_activity_date": "",
             "follow_up_sent_date": "",
@@ -451,7 +451,7 @@ class FollowUpEngineTests(unittest.TestCase):
     def test_explicit_ask_when_due_manual_review_overrides_legacy_opt_out_fields(self) -> None:
         app = {
             "appl_id": "WUR-AIP-22",
-            "status": "Applied",
+            "status": "Active",
             "applied_date": "2026-03-27",
             "last_activity_date": "",
             "follow_up_sent_date": "",
@@ -467,7 +467,7 @@ class FollowUpEngineTests(unittest.TestCase):
     def test_deferred_rows_do_not_produce_manual_review_candidates(self) -> None:
         app = {
             "appl_id": "WUR-AIP-23",
-            "status": "Applied",
+            "status": "Active",
             "applied_date": "2026-03-20",
             "last_activity_date": "",
             "follow_up_sent_date": "",
@@ -484,7 +484,7 @@ class FollowUpEngineTests(unittest.TestCase):
         apps = [
             {
                 "appl_id": "WUR-AIP-24",
-                "status": "Applied",
+                "status": "Active",
                 "applied_date": "2026-03-20",
                 "last_activity_date": "",
                 "follow_up_sent_date": "",
