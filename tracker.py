@@ -4516,7 +4516,49 @@ class SheetsClient:
             lambda: self.spreadsheet.batch_update(request_body),
         )
 
-    def _normalize_rows(self, rows: list[list[str]]) -> list[list[str]]:
+    def _apply_status_validation(self, row_count: int, headers: list[str]) -> None:
+        """
+        Apply lifecycle status dropdown validation to the status column.
+
+        The validation starts below the header and covers the represented sheet rows.
+        """
+        if row_count <= 1 or "status" not in headers:
+            return
+
+        status_column_index = headers.index("status")
+        request_body: JsonObject = {
+            "requests": [
+                {
+                    "setDataValidation": {
+                        "range": {
+                            "sheetId": self.ws.id,
+                            "startRowIndex": 1,
+                            "endRowIndex": row_count,
+                            "startColumnIndex": status_column_index,
+                            "endColumnIndex": status_column_index + 1,
+                        },
+                        "rule": {
+                            "condition": {
+                                "type": "ONE_OF_LIST",
+                                "values": [
+                                    {"userEnteredValue": status}
+                                    for status in APPLICATION_STATUSES
+                                ],
+                            },
+                            "strict": True,
+                            "showCustomUi": True,
+                        },
+                    }
+                }
+            ]
+        }
+        self._execute_with_retry(
+            "configure status dropdown validation",
+            lambda: self.spreadsheet.batch_update(request_body),
+        )
+
+    @staticmethod
+    def _normalize_rows(rows: list[list[str]]) -> list[list[str]]:
         """
         Ensure worksheet rows contain the configured headers and aligned row widths.
 
@@ -4544,10 +4586,15 @@ class SheetsClient:
 
         normalized_rows = [headers]
         header_count = len(headers)
+        status_column_index = headers.index("status") if "status" in headers else -1
         for raw_row in rows[1:]:
             normalized_row = list(raw_row[:header_count])
             if len(normalized_row) < header_count:
                 normalized_row.extend([""] * (header_count - len(normalized_row)))
+            if status_column_index >= 0:
+                normalized_row[status_column_index] = normalize_application_status(
+                    normalized_row[status_column_index]
+                )
             normalized_rows.append(normalized_row)
         return normalized_rows
 
@@ -4666,6 +4713,27 @@ class SheetsClient:
                 write_chunk,
             )
         self._apply_header_filter(row_count=total_rows, column_count=total_columns)
+        self._apply_status_validation(total_rows, normalized_rows[0])
+
+    def migrate_statuses_to_lifecycle(self) -> int:
+        """
+        Convert existing status cell values and refresh lifecycle dropdown validation.
+
+        Returns the number of data rows whose status value changed.
+        """
+        rows = self._load_sheet_rows()
+        normalized_rows = self._normalize_rows(rows)
+        status_column_index = normalized_rows[0].index("status")
+        changed_count = 0
+
+        for before_row, after_row in zip(rows[1:], normalized_rows[1:]):
+            before_value = before_row[status_column_index] if status_column_index < len(before_row) else ""
+            after_value = after_row[status_column_index]
+            if str(before_value or "").strip() != after_value:
+                changed_count += 1
+
+        self._write_rows(normalized_rows)
+        return changed_count
 
     def get_all(self) -> list[ApplicationRecord]:
         rows = self._load_sheet_rows()
@@ -4932,6 +5000,7 @@ class SheetsClient:
             lambda: self.ws.append_row(COLUMNS),
         )
         self._apply_header_filter(row_count=1, column_count=len(COLUMNS))
+        self._apply_status_validation(row_count=2, headers=list(COLUMNS))
 
 
 # ── AI Grouper ─────────────────────────────────────────────────────────────────
@@ -10117,6 +10186,17 @@ class Tracker:
         self.sheets.upsert(app)
         console.print(f"  [bold green]✓ Added: {company} — {role}[/bold green]")
 
+    def migrate_statuses(self) -> None:
+        console.rule("[bold blue]Migrating Sheet Statuses")
+        changed_count = self.sheets.migrate_statuses_to_lifecycle()
+        console.print(
+            f"  [green]Migrated {changed_count} status values to lifecycle statuses.[/green]"
+        )
+        console.print(
+            "  Status dropdown now uses: "
+            + ", ".join(f"[cyan]{status}[/cyan]" for status in APPLICATION_STATUSES)
+        )
+
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
@@ -10136,6 +10216,7 @@ def main():
     g.add_argument("--resync-app",    metavar="APPL_ID", help="Delete one email-backed application row, clear its processed state, and sync it again")
     g.add_argument("--resync-all",    action="store_true", help="Delete all email-backed application rows, clear their processed state, and sync them again")
     g.add_argument("--full-reset",    action="store_true", help="Destructively clear tracker state and rebuild from Gmail")
+    g.add_argument("--migrate-statuses", action="store_true", help="Convert Sheet statuses to lifecycle values and update the dropdown")
     g.add_argument("--debug-gmail-labels", action="store_true", help="Print Gmail user labels returned by the Gmail API")
     g.add_argument("--resume-run",    metavar="RUN_ID", help="Resume a saved AI grouping run from state/grouping_runs")
     p.add_argument("--yes", action="store_true", help="Skip confirmation prompts for destructive commands")
@@ -10167,6 +10248,8 @@ def main():
             t.resync_all(skip_confirmation=args.yes)
         elif args.full_reset:
             t.full_reset(skip_confirmation=args.yes)
+        elif args.migrate_statuses:
+            t.migrate_statuses()
         elif args.debug_gmail_labels:
             t.debug_gmail_labels()
         elif args.resume_run:
