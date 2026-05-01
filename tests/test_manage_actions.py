@@ -67,19 +67,6 @@ class ManageActionTests(unittest.TestCase):
         tracker.sheets.set_field.assert_any_call(app["appl_id"], "status", "Active")
         tracker.sheets.set_field.assert_any_call(app["appl_id"], "deferred_until", "")
 
-    def test_describe_missing_email_policy_returns_manage_friendly_labels(self) -> None:
-        self.assertEqual(Tracker._describe_missing_email_policy(""), "Ask every time")
-        self.assertEqual(Tracker._describe_missing_email_policy("skip_always"), "Opt out")
-        self.assertEqual(
-            Tracker._describe_missing_email_policy("create_empty_draft"),
-            "Create empty draft",
-        )
-        self.assertEqual(Tracker._describe_missing_email_policy("unexpected"), "Ask every time")
-
-    def test_describe_action_opt_out_returns_enabled_disabled_labels(self) -> None:
-        self.assertEqual(Tracker._describe_action_opt_out(""), "Enabled")
-        self.assertEqual(Tracker._describe_action_opt_out("yes"), "Disabled")
-
     def test_describe_action_policy_returns_manage_friendly_labels(self) -> None:
         self.assertEqual(Tracker._describe_action_policy(""), "Enabled")
         self.assertEqual(Tracker._describe_action_policy("enabled"), "Enabled")
@@ -147,7 +134,7 @@ class ManageActionTests(unittest.TestCase):
         )
         self.assertEqual(app["follow_up_policy"], "ask_when_due")
 
-    def test_manage_action_opt_outs_shows_effective_legacy_policy_in_detail_view(self) -> None:
+    def test_manage_action_opt_outs_ignores_legacy_follow_up_opt_out_in_detail_view(self) -> None:
         tracker = Tracker.__new__(Tracker)
         tracker.sheets = Mock()
         app = {
@@ -167,8 +154,9 @@ class ManageActionTests(unittest.TestCase):
             for call in mock_print.call_args_list
             if call.args
         ]
-        self.assertTrue(any("Follow-up" in message and "current: [green]Disabled" in message for message in printed_messages))
-        self.assertTrue(any("current behavior is [green]Disabled" in message for message in printed_messages))
+        self.assertTrue(any("Follow-up" in message and "current: [green]Enabled" in message for message in printed_messages))
+        self.assertTrue(any("current behavior is [green]Enabled" in message for message in printed_messages))
+        self.assertFalse(any("follow_up_opt_out" in message for message in printed_messages))
         tracker.sheets.set_field.assert_not_called()
 
     def test_manage_action_opt_outs_sets_withdraw_policy_to_ask_when_due(self) -> None:
@@ -200,6 +188,70 @@ class ManageActionTests(unittest.TestCase):
             "ask_when_due",
         )
         self.assertEqual(app["deletion_request_policy"], "ask_when_due")
+
+    def test_missing_follow_up_email_skip_always_disables_follow_up_policy(self) -> None:
+        tracker = Tracker.__new__(Tracker)
+        tracker.sheets = Mock()
+        app = {
+            "appl_id": "app-1",
+            "company": "Acme",
+            "role": "Engineer",
+            "follow_up_policy": "enabled",
+        }
+
+        with patch("tracker.console.print"), patch("tracker.Prompt.ask", return_value="a"):
+            target, requested_manual_draft, should_skip_action = tracker._resolve_missing_email_action(
+                app,
+                "follow_up",
+            )
+
+        self.assertEqual((target, requested_manual_draft, should_skip_action), ("", False, True))
+        tracker.sheets.set_field.assert_called_once_with("app-1", "follow_up_policy", "disabled")
+        self.assertEqual(app["follow_up_policy"], "disabled")
+
+    def test_missing_withdraw_email_skip_always_disables_withdraw_policy(self) -> None:
+        tracker = Tracker.__new__(Tracker)
+        tracker.sheets = Mock()
+        app = {
+            "appl_id": "app-1",
+            "company": "Acme",
+            "role": "Engineer",
+            "withdraw_policy": "enabled",
+        }
+
+        with patch("tracker.console.print"), patch("tracker.Prompt.ask", return_value="a"):
+            target, requested_manual_draft, should_skip_action = tracker._resolve_missing_email_action(
+                app,
+                "withdraw",
+            )
+
+        self.assertEqual((target, requested_manual_draft, should_skip_action), ("", False, True))
+        tracker.sheets.set_field.assert_called_once_with("app-1", "withdraw_policy", "disabled")
+        self.assertEqual(app["withdraw_policy"], "disabled")
+
+    def test_missing_deletion_request_email_skip_always_disables_deletion_request_policy(self) -> None:
+        tracker = Tracker.__new__(Tracker)
+        tracker.sheets = Mock()
+        app = {
+            "appl_id": "app-1",
+            "company": "Acme",
+            "role": "Engineer",
+            "deletion_request_policy": "enabled",
+        }
+
+        with patch("tracker.console.print"), patch("tracker.Prompt.ask", return_value="a"):
+            target, requested_manual_draft, should_skip_action = tracker._resolve_missing_email_action(
+                app,
+                "deletion_request",
+            )
+
+        self.assertEqual((target, requested_manual_draft, should_skip_action), ("", False, True))
+        tracker.sheets.set_field.assert_called_once_with(
+            "app-1",
+            "deletion_request_policy",
+            "disabled",
+        )
+        self.assertEqual(app["deletion_request_policy"], "disabled")
 
     def test_persist_resolved_contact_email_skips_privacy_actions(self) -> None:
         tracker = Tracker.__new__(Tracker)

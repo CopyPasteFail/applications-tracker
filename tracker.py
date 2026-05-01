@@ -61,7 +61,6 @@ from pypdf import PdfReader
 from tracker_actions import (
     APPLICATION_STATUSES,
     FollowUpEngine,
-    _has_explicit_action_policy,
     action_blocks_automatic_digest as action_blocks_automatic_digest,
     application_lifecycle_from_status as application_lifecycle_from_status,
     get_effective_action_policy,
@@ -4291,8 +4290,6 @@ COLUMNS = [
     "applied_date", "last_activity_date",
     "recruiter_name", "recruiter_email", "ats_email", "contact_email",
     "follow_up_sent_date", "follow_up_count", "withdrawal_sent_date", "deletion_request_sent_date",
-    "follow_up_opt_out", "deletion_request_opt_out",
-    "follow_up_missing_email_policy", "withdraw_missing_email_policy", "deletion_request_missing_email_policy",
     "withdraw_in_next_digest",
     "deferred_until",
     "notes", "linkedin_contact", "email_ids", "thread_ids", "internet_message_ids",
@@ -4590,6 +4587,26 @@ class SheetsClient:
         normalized_rows = [headers]
         header_count = len(headers)
         status_column_index = headers.index("status") if "status" in headers else -1
+        follow_up_opt_out_index = (
+            headers.index("follow_up_opt_out")
+            if "follow_up_opt_out" in headers
+            else -1
+        )
+        follow_up_policy_index = (
+            headers.index("follow_up_policy")
+            if "follow_up_policy" in headers
+            else -1
+        )
+        deletion_request_opt_out_index = (
+            headers.index("deletion_request_opt_out")
+            if "deletion_request_opt_out" in headers
+            else -1
+        )
+        deletion_request_policy_index = (
+            headers.index("deletion_request_policy")
+            if "deletion_request_policy" in headers
+            else -1
+        )
         for raw_row in rows[1:]:
             normalized_row = list(raw_row[:header_count])
             if len(normalized_row) < header_count:
@@ -4598,6 +4615,20 @@ class SheetsClient:
                 normalized_row[status_column_index] = normalize_application_status(
                     normalized_row[status_column_index]
                 )
+            if (
+                follow_up_opt_out_index >= 0
+                and follow_up_policy_index >= 0
+                and not str(normalized_row[follow_up_policy_index] or "").strip()
+                and is_truthy_sheet_value(normalized_row[follow_up_opt_out_index])
+            ):
+                normalized_row[follow_up_policy_index] = "disabled"
+            if (
+                deletion_request_opt_out_index >= 0
+                and deletion_request_policy_index >= 0
+                and not str(normalized_row[deletion_request_policy_index] or "").strip()
+                and is_truthy_sheet_value(normalized_row[deletion_request_opt_out_index])
+            ):
+                normalized_row[deletion_request_policy_index] = "disabled"
             normalized_rows.append(normalized_row)
         return normalized_rows
 
@@ -6338,7 +6369,6 @@ Return ONLY a valid JSON object: {{"results": [...]}}. No markdown, no prose."""
                         "follow_up_sent_date":  "",
                         "follow_up_count":      "0",
                         "withdrawal_sent_date": "",
-                        "follow_up_opt_out":    "",
                         "withdraw_in_next_digest": "",
                         "notes":                "",
                         "linkedin_contact":     "",
@@ -7104,35 +7134,13 @@ class Tracker:
             self.run_digest_only()
 
     @staticmethod
-    def _missing_email_policy_field(action_type: str) -> str:
+    def _action_policy_field(action_type: str) -> str:
         field_by_action_type = {
-            "follow_up": "follow_up_missing_email_policy",
-            "withdraw": "withdraw_missing_email_policy",
-            "deletion_request": "deletion_request_missing_email_policy",
+            "follow_up": "follow_up_policy",
+            "withdraw": "withdraw_policy",
+            "deletion_request": "deletion_request_policy",
         }
         return field_by_action_type.get(action_type, "")
-
-    @staticmethod
-    def _normalize_missing_email_policy(raw_policy: object) -> str:
-        normalized_policy = str(raw_policy or "").strip().lower()
-        allowed_policies = {"", "skip_always", "create_empty_draft"}
-        if normalized_policy in allowed_policies:
-            return normalized_policy
-        return ""
-
-    @classmethod
-    def _describe_missing_email_policy(cls, raw_policy: object) -> str:
-        normalized_policy = cls._normalize_missing_email_policy(raw_policy)
-        policy_labels = {
-            "": "Ask every time",
-            "skip_always": "Opt out",
-            "create_empty_draft": "Create empty draft",
-        }
-        return policy_labels.get(normalized_policy, "Ask every time")
-
-    @staticmethod
-    def _describe_action_opt_out(raw_value: object) -> str:
-        return "Disabled" if is_truthy_sheet_value(raw_value) else "Enabled"
 
     @staticmethod
     def _describe_action_policy(raw_value: object) -> str:
@@ -7155,22 +7163,9 @@ class Tracker:
             current_status = self._describe_action_policy(
                 get_effective_action_policy(app, action_type)
             )
-            raw_policy = app.get(field_name, "")
-            compatibility_note = ""
-            if not _has_explicit_action_policy(raw_policy) and action_type in {
-                "follow_up",
-                "deletion_request",
-            }:
-                legacy_field = (
-                    "follow_up_opt_out"
-                    if action_type == "follow_up"
-                    else "deletion_request_opt_out"
-                )
-                if is_truthy_sheet_value(app.get(legacy_field)):
-                    compatibility_note = f" [dim](from legacy {legacy_field})[/dim]"
             console.print(
                 f"  [cyan]{label} ({shortcut})[/cyan] — current: "
-                f"[green]{current_status}[/green]{compatibility_note}"
+                f"[green]{current_status}[/green]"
             )
         selected_target = Prompt.ask(
             "  Choose action to edit",
@@ -8102,13 +8097,7 @@ class Tracker:
         app: ApplicationRecord,
         action_type: str,
     ) -> tuple[str, bool, bool]:
-        policy_field = self._missing_email_policy_field(action_type)
-        saved_policy = self._normalize_missing_email_policy(app.get(policy_field, ""))
-        if saved_policy == "skip_always":
-            return "", False, True
-        if saved_policy == "create_empty_draft":
-            return "", True, False
-
+        policy_field = self._action_policy_field(action_type)
         company_name = str(app.get("company", "") or "").strip() or "Unknown company"
         role_title = str(app.get("role", "") or "").strip() or "Unknown role"
         console.print(
@@ -8139,8 +8128,6 @@ class Tracker:
                 if action_type == "follow_up":
                     self.sheets.set_field(app["appl_id"], "contact_email", confirmed_email)
                     app["contact_email"] = confirmed_email
-                if policy_field:
-                    self.sheets.set_field(app["appl_id"], policy_field, "")
                 app["recruiter_email"] = app.get("recruiter_email", "")
                 return confirmed_email, False, False
 
@@ -8149,8 +8136,6 @@ class Tracker:
                 if action_type == "follow_up":
                     self.sheets.set_field(app["appl_id"], "contact_email", confirmed_email)
                     app["contact_email"] = confirmed_email
-                if policy_field:
-                    self.sheets.set_field(app["appl_id"], policy_field, "")
                 app["recruiter_email"] = app.get("recruiter_email", "")
                 return confirmed_email, False, False
 
@@ -8159,14 +8144,11 @@ class Tracker:
 
             if normalized_choice == "a":
                 if policy_field:
-                    self.sheets.set_field(app["appl_id"], policy_field, "skip_always")
-                    app[policy_field] = "skip_always"
+                    self.sheets.set_field(app["appl_id"], policy_field, "disabled")
+                    app[policy_field] = "disabled"
                 return "", False, True
 
             if normalized_choice == "d":
-                if policy_field:
-                    self.sheets.set_field(app["appl_id"], policy_field, "create_empty_draft")
-                    app[policy_field] = "create_empty_draft"
                 return "", True, False
 
             console.print("[red]  Enter an email address, or choose o / a / d.[/red]")
@@ -10238,7 +10220,6 @@ class Tracker:
             "follow_up_sent_date":  "",
             "follow_up_count":      "0",
             "withdrawal_sent_date": "",
-            "follow_up_opt_out":    "",
             "withdraw_in_next_digest": "",
             "notes":                notes,
             "linkedin_contact":     contact,

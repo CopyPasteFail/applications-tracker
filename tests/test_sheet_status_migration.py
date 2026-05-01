@@ -136,6 +136,80 @@ class SheetStatusMigrationTests(unittest.TestCase):
         self.assertEqual(loaded_rows[1][loaded_rows[0].index("status")], "Active")
         client._write_rows.assert_not_called()
 
+    def test_load_sheet_rows_preserves_removed_columns_and_backfills_legacy_policies(self) -> None:
+        rows = [
+            [
+                "appl_id",
+                "status",
+                "follow_up_opt_out",
+                "deletion_request_opt_out",
+                "follow_up_missing_email_policy",
+                "withdraw_missing_email_policy",
+                "deletion_request_missing_email_policy",
+                "custom_formula",
+            ],
+            ["A1", "Active", "yes", "yes", "skip_always", "", "create_empty_draft", "=CUSTOM(A2)"],
+            ["A2", "Active", "", "", "", "", "", "=CUSTOM(A3)"],
+        ]
+        client = SheetsClient.__new__(SheetsClient)
+        client.ws = Mock()
+        client.ws.get_all_values.return_value = rows
+        client._execute_with_retry = Mock(side_effect=lambda _name, operation: operation())
+        client._write_rows = Mock()
+
+        loaded_rows = client._load_sheet_rows()
+        written_rows = client._write_rows.call_args.args[0]
+        headers = loaded_rows[0]
+        follow_up_policy_index = headers.index("follow_up_policy")
+        policy_index = headers.index("deletion_request_policy")
+        follow_up_legacy_index = headers.index("follow_up_opt_out")
+        legacy_index = headers.index("deletion_request_opt_out")
+        follow_up_missing_index = headers.index("follow_up_missing_email_policy")
+        withdraw_missing_index = headers.index("withdraw_missing_email_policy")
+        deletion_missing_index = headers.index("deletion_request_missing_email_policy")
+        custom_index = headers.index("custom_formula")
+
+        self.assertEqual(loaded_rows[1][follow_up_policy_index], "disabled")
+        self.assertEqual(loaded_rows[1][policy_index], "disabled")
+        self.assertEqual(loaded_rows[2][follow_up_policy_index], "")
+        self.assertEqual(loaded_rows[2][policy_index], "")
+        self.assertEqual(loaded_rows[1][follow_up_legacy_index], "yes")
+        self.assertEqual(loaded_rows[1][legacy_index], "yes")
+        self.assertEqual(loaded_rows[1][follow_up_missing_index], "skip_always")
+        self.assertEqual(loaded_rows[1][withdraw_missing_index], "")
+        self.assertEqual(loaded_rows[1][deletion_missing_index], "create_empty_draft")
+        self.assertEqual(loaded_rows[1][custom_index], "=CUSTOM(A2)")
+        self.assertEqual(written_rows, loaded_rows)
+        client._write_rows.assert_called_once()
+
+    def test_normalize_rows_keeps_explicit_deletion_policy_over_legacy_opt_out(self) -> None:
+        rows = [
+            ["appl_id", "status", "deletion_request_opt_out", "deletion_request_policy"],
+            ["A1", "Active", "yes", "ask_when_due"],
+        ]
+
+        normalized_rows = SheetsClient._normalize_rows(rows)
+        headers = normalized_rows[0]
+
+        self.assertEqual(
+            normalized_rows[1][headers.index("deletion_request_policy")],
+            "ask_when_due",
+        )
+
+    def test_normalize_rows_keeps_explicit_follow_up_policy_over_legacy_opt_out(self) -> None:
+        rows = [
+            ["appl_id", "status", "follow_up_opt_out", "follow_up_policy"],
+            ["A1", "Active", "yes", "ask_when_due"],
+        ]
+
+        normalized_rows = SheetsClient._normalize_rows(rows)
+        headers = normalized_rows[0]
+
+        self.assertEqual(
+            normalized_rows[1][headers.index("follow_up_policy")],
+            "ask_when_due",
+        )
+
     def test_upsert_many_uses_appl_id_header_when_columns_move(self) -> None:
         rows = [
             ["company", "appl_id", "status", "notes"],

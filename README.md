@@ -333,7 +333,7 @@ Per-action policy values:
 - `disabled`: suppress that action for this row.
 - `ask_when_due`: show the due item in the digest/manual-review section, but do not create a Gmail draft automatically.
 
-Legacy opt-out columns are still honored for existing sheets, but explicit new policy fields take precedence.
+Removed legacy opt-out columns are accepted only as old-sheet input during normalization. If an old row has blank `follow_up_policy` with truthy `follow_up_opt_out`, it is backfilled to `follow_up_policy = disabled`.
 
 ### Add a LinkedIn application
 
@@ -389,11 +389,6 @@ Columns are identified by header label, not by position. You can move columns ar
 | `follow_up_policy` | `enabled`, `disabled`, or `ask_when_due` for follow-up drafting. Blank means `enabled` |
 | `withdraw_policy` | `enabled`, `disabled`, or `ask_when_due` for automatic withdrawal drafting. Blank means `enabled` |
 | `deletion_request_policy` | `enabled`, `disabled`, or `ask_when_due` for deletion-request drafting. Blank means `enabled` |
-| `follow_up_opt_out` | Compatibility/deprecated. Set to `yes` / `true` / `1` / `skip` to suppress follow-up drafting only when `follow_up_policy` is blank |
-| `deletion_request_opt_out` | Compatibility/deprecated. Set to `yes` / `true` / `1` / `skip` to suppress deletion-request drafting only when `deletion_request_policy` is blank |
-| `follow_up_missing_email_policy` | Missing-recipient behavior for follow-ups: blank asks every time, `skip_always` skips, `create_empty_draft` creates an empty-address draft |
-| `withdraw_missing_email_policy` | Missing-recipient behavior for withdrawals: blank asks every time, `skip_always` skips, `create_empty_draft` creates an empty-address draft |
-| `deletion_request_missing_email_policy` | Missing-recipient behavior for deletion requests: blank asks every time, `skip_always` skips, `create_empty_draft` creates an empty-address draft |
 | `withdraw_in_next_digest` | Manual one-shot withdrawal request for the next digest. Cleared after confirm/send |
 | `deferred_until` | Skip pipeline until this date (YYYY-MM-DD) |
 | `notes` | Free text - edit manually |

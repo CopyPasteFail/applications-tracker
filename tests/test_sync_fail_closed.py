@@ -153,7 +153,6 @@ class SyncFailClosedTests(unittest.TestCase):
                         "follow_up_sent_date": "",
                         "follow_up_count": "0",
                         "withdrawal_sent_date": "",
-                        "follow_up_opt_out": "",
                         "withdraw_in_next_digest": "",
                         "notes": "",
                         "linkedin_contact": "",

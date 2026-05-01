@@ -15,7 +15,7 @@ This document captures the durable runtime boundaries for the tracker. It is the
 - Legacy status text such as `Applied`, `Screening`, `Interview`, and `Assessment` is normalized to `Active`.
 - Mid-pipeline email signals can help identify application-related messages, but they do not create separate stored statuses or action behavior.
 - Per-action policies control whether a due action is drafted automatically.
-- Legacy opt-out columns remain compatibility inputs, but explicit policy fields take precedence.
+- Legacy opt-out columns are old-sheet inputs only. Sheet normalization backfills blank policy fields before runtime action planning reads them.
 
 ## Command Semantics
 

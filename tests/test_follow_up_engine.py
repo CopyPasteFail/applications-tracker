@@ -120,7 +120,7 @@ class FollowUpEngineTests(unittest.TestCase):
 
         self.assertEqual(actions, [])
 
-    def test_follow_up_opt_out_skips_follow_up_before_withdraw_threshold(self) -> None:
+    def test_runtime_ignores_legacy_follow_up_opt_out_when_policy_is_blank(self) -> None:
         app = {
             "appl_id": "WUR-AIP-4",
             "status": "Active",
@@ -134,9 +134,9 @@ class FollowUpEngineTests(unittest.TestCase):
 
         actions = self.engine.compute_actions([app])
 
-        self.assertEqual(actions, [])
+        self.assertEqual([action["type"] for action in actions], ["follow_up"])
 
-    def test_follow_up_opt_out_still_allows_withdrawal_at_threshold_from_applied_date(self) -> None:
+    def test_runtime_legacy_follow_up_opt_out_does_not_block_withdrawal(self) -> None:
         app = {
             "appl_id": "WUR-AIP-5",
             "status": "Active",
@@ -159,11 +159,11 @@ class FollowUpEngineTests(unittest.TestCase):
         self.assertEqual(normalize_action_policy("unexpected"), "enabled")
         self.assertEqual(normalize_action_policy("ASK_WHEN_DUE"), "ask_when_due")
 
-    def test_legacy_follow_up_opt_out_disables_follow_up_when_new_policy_blank(self) -> None:
+    def test_get_effective_action_policy_ignores_legacy_follow_up_opt_out(self) -> None:
         app = {"follow_up_opt_out": "yes", "follow_up_policy": ""}
 
-        self.assertEqual(get_effective_action_policy(app, "follow_up"), "disabled")
-        self.assertTrue(action_blocks_automatic_digest(app, "follow_up"))
+        self.assertEqual(get_effective_action_policy(app, "follow_up"), "enabled")
+        self.assertFalse(action_blocks_automatic_digest(app, "follow_up"))
 
     def test_explicit_follow_up_policy_overrides_legacy_opt_out(self) -> None:
         app = {"follow_up_opt_out": "yes", "follow_up_policy": "enabled"}
@@ -173,18 +173,9 @@ class FollowUpEngineTests(unittest.TestCase):
 
     def test_explicit_ask_when_due_policy_overrides_legacy_opt_out(self) -> None:
         follow_up_app = {"follow_up_opt_out": "yes", "follow_up_policy": "ask_when_due"}
-        deletion_request_app = {
-            "deletion_request_opt_out": "yes",
-            "deletion_request_policy": "ask_when_due",
-        }
 
         self.assertEqual(get_effective_action_policy(follow_up_app, "follow_up"), "ask_when_due")
-        self.assertEqual(
-            get_effective_action_policy(deletion_request_app, "deletion_request"),
-            "ask_when_due",
-        )
         self.assertTrue(action_blocks_automatic_digest(follow_up_app, "follow_up"))
-        self.assertTrue(action_blocks_automatic_digest(deletion_request_app, "deletion_request"))
 
     def test_ask_when_due_blocks_automatic_digest_creation(self) -> None:
         self.assertTrue(
@@ -318,23 +309,6 @@ class FollowUpEngineTests(unittest.TestCase):
 
         self.assertEqual(actions, [])
 
-    def test_legacy_deletion_request_opt_out_still_suppresses_deletion_request(self) -> None:
-        app = {
-            "appl_id": "WUR-AIP-14",
-            "status": "Rejected",
-            "applied_date": "2026-03-20",
-            "last_activity_date": "",
-            "follow_up_sent_date": "",
-            "follow_up_count": "0",
-            "deletion_request_opt_out": "yes",
-            "withdrawal_sent_date": "",
-            "deletion_request_sent_date": "",
-        }
-
-        actions = self.engine.compute_actions([app])
-
-        self.assertEqual(actions, [])
-
     def test_ask_when_due_follow_up_due_becomes_manual_review_candidate_only(self) -> None:
         app = {
             "appl_id": "WUR-AIP-17",
@@ -448,7 +422,7 @@ class FollowUpEngineTests(unittest.TestCase):
         self.assertEqual([action["type"] for action in actions], ["follow_up"])
         self.assertEqual(candidates, [])
 
-    def test_explicit_ask_when_due_manual_review_overrides_legacy_opt_out_fields(self) -> None:
+    def test_explicit_ask_when_due_manual_review_is_source_of_truth(self) -> None:
         app = {
             "appl_id": "WUR-AIP-22",
             "status": "Active",

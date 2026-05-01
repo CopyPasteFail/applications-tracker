@@ -151,9 +151,7 @@ def get_effective_action_policy(app: ApplicationRecord, action_type: str) -> Act
     """
     Return the effective per-action policy for an application row.
 
-    Compatibility:
-    - Missing new policy fields default to `enabled`.
-    - Legacy opt-out fields still disable matching actions unless a valid new policy is set.
+    Blank or missing policy fields default to `enabled`.
     """
     policy_field_by_action_type = {
         "follow_up": "follow_up_policy",
@@ -165,14 +163,6 @@ def get_effective_action_policy(app: ApplicationRecord, action_type: str) -> Act
         raw_policy = app.get(policy_field, "")
         if _has_explicit_action_policy(raw_policy):
             return normalize_action_policy(raw_policy)
-
-    legacy_opt_out_field_by_action_type = {
-        "follow_up": "follow_up_opt_out",
-        "deletion_request": "deletion_request_opt_out",
-    }
-    legacy_opt_out_field = legacy_opt_out_field_by_action_type.get(action_type)
-    if legacy_opt_out_field and is_truthy_sheet_value(app.get(legacy_opt_out_field)):
-        return "disabled"
 
     return "enabled"
 
