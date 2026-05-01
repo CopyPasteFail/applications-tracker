@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock
 
-from tracker import APPLICATION_STATUSES, SheetsClient
+from tracker import APPLICATION_STATUSES, COLUMNS, SheetsClient
 
 
 class SheetStatusMigrationTests(unittest.TestCase):
@@ -114,6 +114,27 @@ class SheetStatusMigrationTests(unittest.TestCase):
             row_count=3,
             headers=["appl_id", "status", "custom_formula"],
         )
+
+    def test_load_sheet_rows_does_not_rewrite_status_only_normalization(self) -> None:
+        headers = list(COLUMNS) + ["custom_formula"]
+        row = [""] * len(headers)
+        row[headers.index("appl_id")] = "A1"
+        row[headers.index("status")] = "Applied"
+        row[headers.index("custom_formula")] = "=CUSTOM(A2)"
+        rows = [
+            headers,
+            row,
+        ]
+        client = SheetsClient.__new__(SheetsClient)
+        client.ws = Mock()
+        client.ws.get_all_values.return_value = rows
+        client._execute_with_retry = Mock(side_effect=lambda _name, operation: operation())
+        client._write_rows = Mock()
+
+        loaded_rows = client._load_sheet_rows()
+
+        self.assertEqual(loaded_rows[1][loaded_rows[0].index("status")], "Active")
+        client._write_rows.assert_not_called()
 
 
 if __name__ == "__main__":

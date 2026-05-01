@@ -4444,11 +4444,11 @@ class SheetsClient:
             lambda: self.ws.get_all_values(),
         ))
         if rows:
-            normalized_rows = self._normalize_rows(rows)
-            if normalized_rows != rows:
-                self._write_rows(normalized_rows)
-                return normalized_rows
-            return rows
+            structurally_normalized_rows = self._normalize_rows(rows, normalize_statuses=False)
+            if structurally_normalized_rows != rows:
+                self._write_rows(structurally_normalized_rows)
+                return self._normalize_rows(structurally_normalized_rows)
+            return self._normalize_rows(rows)
 
         self._execute_with_retry(
             "initialize sheet headers",
@@ -4558,7 +4558,10 @@ class SheetsClient:
         )
 
     @staticmethod
-    def _normalize_rows(rows: list[list[str]]) -> list[list[str]]:
+    def _normalize_rows(
+        rows: list[list[str]],
+        normalize_statuses: bool = True,
+    ) -> list[list[str]]:
         """
         Ensure worksheet rows contain the configured headers and aligned row widths.
 
@@ -4591,7 +4594,7 @@ class SheetsClient:
             normalized_row = list(raw_row[:header_count])
             if len(normalized_row) < header_count:
                 normalized_row.extend([""] * (header_count - len(normalized_row)))
-            if status_column_index >= 0:
+            if normalize_statuses and status_column_index >= 0:
                 normalized_row[status_column_index] = normalize_application_status(
                     normalized_row[status_column_index]
                 )
