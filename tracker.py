@@ -7185,12 +7185,12 @@ class Tracker:
         )
         console.print(
             f"  Set {label.lower()} drafting for this row: [cyan]enabled (e)[/cyan], "
-            "[cyan]disabled (a)[/cyan], [cyan]ask when due (k)[/cyan], "
+            "[cyan]disabled (d)[/cyan], [cyan]ask when due (k)[/cyan], "
             "or [cyan]cancel (c)[/cyan]"
         )
         selected_policy = Prompt.ask(
             "  New behavior",
-            choices=["e", "a", "k", "c"],
+            choices=["e", "d", "k", "c"],
             default="c",
         ).strip().lower()
         if selected_policy == "c":
@@ -7199,7 +7199,7 @@ class Tracker:
 
         policy_by_selection = {
             "e": "enabled",
-            "a": "disabled",
+            "d": "disabled",
             "k": "ask_when_due",
         }
         policy_value = policy_by_selection[selected_policy]

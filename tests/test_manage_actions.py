@@ -79,7 +79,7 @@ class ManageActionTests(unittest.TestCase):
         tracker.sheets = Mock()
         app = {"appl_id": "app-1", "deletion_request_policy": ""}
 
-        with patch("tracker.console.print"), patch("tracker.Prompt.ask", side_effect=["d", "a"]):
+        with patch("tracker.console.print"), patch("tracker.Prompt.ask", side_effect=["d", "d"]):
             tracker._manage_action_opt_outs(app)
 
         tracker.sheets.set_field.assert_called_once_with(
@@ -109,7 +109,7 @@ class ManageActionTests(unittest.TestCase):
         tracker.sheets = Mock()
         app = {"appl_id": "app-1", "follow_up_policy": ""}
 
-        with patch("tracker.console.print"), patch("tracker.Prompt.ask", side_effect=["f", "a"]):
+        with patch("tracker.console.print"), patch("tracker.Prompt.ask", side_effect=["f", "d"]):
             tracker._manage_action_opt_outs(app)
 
         tracker.sheets.set_field.assert_called_once_with(
