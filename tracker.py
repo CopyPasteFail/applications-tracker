@@ -59,12 +59,11 @@ import gspread
 from pypdf import PdfReader
 
 from tracker_actions import (
-    STATUS_RANK,
+    APPLICATION_STATUSES,
     FollowUpEngine,
     _has_explicit_action_policy,
     action_blocks_automatic_digest as action_blocks_automatic_digest,
     application_lifecycle_from_status as application_lifecycle_from_status,
-    application_progress_signal_from_status as application_progress_signal_from_status,
     get_effective_action_policy,
     is_active_application_lifecycle as is_active_application_lifecycle,
     is_paused_application_status as is_paused_application_status,
@@ -74,9 +73,7 @@ from tracker_actions import (
     normalize_application_status,
     parse_iso_date,
     should_clear_deferred_until_for_status,
-    status_blocks_auto_withdraw as status_blocks_auto_withdraw,
     status_blocks_pipeline_actions as status_blocks_pipeline_actions,
-    status_rank,
 )
 
 CredentialsLoader = cast(Any, Credentials)

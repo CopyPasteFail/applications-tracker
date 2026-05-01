@@ -9,85 +9,67 @@ ApplicationRecord: TypeAlias = dict[str, Any]
 PendingActionRecord: TypeAlias = dict[str, Any]
 ManualReviewCandidate: TypeAlias = dict[str, Any]
 ActionPolicy: TypeAlias = str
-ApplicationLifecycle: TypeAlias = Literal["active", "paused", "rejected", "withdrawn", "offer"]
-ApplicationProgressSignal: TypeAlias = Literal["applied", "screening", "interview", "assessment", "unknown"]
+ApplicationStatus: TypeAlias = Literal["Active", "Paused", "Rejected", "Withdrawn", "Offer"]
+ApplicationLifecycle: TypeAlias = ApplicationStatus
 
-STATUS_RANK = {s: i for i, s in enumerate(
-    ["Applied", "Screening", "Interview", "Assessment", "Offer", "Rejected", "Withdrawn", "Ghosted"]
-)}
-DEFAULT_APPLICATION_STATUS = "Applied"
-TERMINAL_APPLICATION_STATUSES = {"Rejected", "Withdrawn", "Offer", "Ghosted"}
-AUTO_WITHDRAW_BLOCKING_APPLICATION_STATUSES = {"Interview", "Assessment"}
-DEFERRED_UNTIL_CLEARING_APPLICATION_STATUSES = {"Rejected"}
-APPLICATION_LIFECYCLE_BY_STATUS: dict[str, ApplicationLifecycle] = {
-    "Applied": "active",
-    "Screening": "active",
-    "Interview": "active",
-    "Assessment": "active",
-    "Paused": "paused",
-    "Rejected": "rejected",
-    "Withdrawn": "withdrawn",
-    "Offer": "offer",
-    # Ghosted remains an internal compatibility status. Project it to active so it
-    # does not become a user-facing lifecycle, while terminal/backfill rules keep
-    # their existing explicit Ghosted handling.
-    "Ghosted": "active",
+APPLICATION_STATUSES: tuple[ApplicationStatus, ...] = (
+    "Active",
+    "Paused",
+    "Rejected",
+    "Withdrawn",
+    "Offer",
+)
+DEFAULT_APPLICATION_STATUS: ApplicationStatus = "Active"
+TERMINAL_APPLICATION_STATUSES: set[ApplicationStatus] = {"Rejected", "Withdrawn", "Offer"}
+PIPELINE_BLOCKING_APPLICATION_STATUSES: set[ApplicationStatus] = {"Paused", "Withdrawn", "Offer"}
+DEFERRED_UNTIL_CLEARING_APPLICATION_STATUSES: set[ApplicationStatus] = {"Rejected"}
+LEGACY_ACTIVE_APPLICATION_STATUSES = {
+    "applied",
+    "screening",
+    "interview",
+    "assessment",
+    "ghosted",
 }
-APPLICATION_PROGRESS_SIGNAL_BY_STATUS: dict[str, ApplicationProgressSignal] = {
-    "Applied": "applied",
-    "Screening": "screening",
-    "Interview": "interview",
-    "Assessment": "assessment",
+APPLICATION_STATUS_BY_NORMALIZED_VALUE: dict[str, ApplicationStatus] = {
+    status.lower(): status for status in APPLICATION_STATUSES
 }
 
 
 # Status and lifecycle helpers
 
 
-def normalize_application_status(raw_status: Any) -> str:
-    """Return the canonical current status string used by compatibility-stage rules."""
+def normalize_application_status(raw_status: Any) -> ApplicationStatus:
+    """Return the lifecycle status stored and used by current tracker logic."""
     status = str(raw_status or "").strip()
-    return status or DEFAULT_APPLICATION_STATUS
-
-
-def status_rank(status: Any) -> int:
-    """Return the current advancement rank, defaulting unknown statuses to Applied behavior."""
-    return STATUS_RANK.get(normalize_application_status(status), STATUS_RANK[DEFAULT_APPLICATION_STATUS])
+    normalized_status = status.lower()
+    if not normalized_status or normalized_status in LEGACY_ACTIVE_APPLICATION_STATUSES:
+        return DEFAULT_APPLICATION_STATUS
+    return APPLICATION_STATUS_BY_NORMALIZED_VALUE.get(normalized_status, DEFAULT_APPLICATION_STATUS)
 
 
 def application_lifecycle_from_status(status: Any) -> ApplicationLifecycle:
-    """Project stored Sheet statuses into the simplified compatibility lifecycle."""
-    return APPLICATION_LIFECYCLE_BY_STATUS.get(normalize_application_status(status), "active")
-
-
-def application_progress_signal_from_status(status: Any) -> ApplicationProgressSignal:
-    """Project stored Sheet statuses into optional progress detail signals."""
-    return APPLICATION_PROGRESS_SIGNAL_BY_STATUS.get(normalize_application_status(status), "unknown")
+    """Return the normalized lifecycle status for compatibility with older imports."""
+    return normalize_application_status(status)
 
 
 def is_active_application_lifecycle(lifecycle: Any) -> bool:
-    """Return whether a projected lifecycle is still in the active pipeline group."""
-    return str(lifecycle or "").strip().lower() == "active"
+    """Return whether a status belongs to the active pipeline group."""
+    return normalize_application_status(lifecycle) == "Active"
 
 
 def is_terminal_application_status(status: Any) -> bool:
-    """Return whether a status is treated as a completed outcome for status backfill."""
+    """Return whether a status is a completed lifecycle outcome."""
     return normalize_application_status(status) in TERMINAL_APPLICATION_STATUSES
 
 
 def is_paused_application_status(status: Any) -> bool:
     """Return whether a status represents a manually paused application."""
-    return application_lifecycle_from_status(status) == "paused"
+    return normalize_application_status(status) == "Paused"
 
 
 def status_blocks_pipeline_actions(status: Any) -> bool:
     """Return whether normal digest pipeline actions should be skipped for this status."""
-    return application_lifecycle_from_status(status) in {"paused", "withdrawn", "offer"}
-
-
-def status_blocks_auto_withdraw(status: Any) -> bool:
-    """Return whether automatic ghosted withdrawal should be skipped for this status."""
-    return normalize_application_status(status) in AUTO_WITHDRAW_BLOCKING_APPLICATION_STATUSES
+    return normalize_application_status(status) in PIPELINE_BLOCKING_APPLICATION_STATUSES
 
 
 def should_clear_deferred_until_for_status(status: Any) -> bool:
@@ -326,7 +308,6 @@ class FollowUpEngine:
 
             if (
                 days >= self.withdraw_days
-                and not status_blocks_auto_withdraw(status)
                 and get_effective_action_policy(app, "withdraw") == "ask_when_due"
             ):
                 candidates.append(
@@ -418,10 +399,8 @@ class FollowUpEngine:
                     })
                 continue
 
-            # Withdraw threshold — don't auto-withdraw if actively in Interview/Assessment
             if (
                 days >= self.withdraw_days
-                and not status_blocks_auto_withdraw(status)
                 and not action_blocks_automatic_digest(app, "withdraw")
             ):
                 actions.append({
