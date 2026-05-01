@@ -7988,7 +7988,7 @@ class Tracker:
             action_type,
         )
         if existing_privacy_email:
-            return existing_privacy_email, False, True
+            return existing_privacy_email, False, False
 
         existing_email = resolve_outbound_target_email(app, action_type)
         if not existing_email:
