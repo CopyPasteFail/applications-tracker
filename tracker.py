@@ -4728,16 +4728,33 @@ class SheetsClient:
         if not rows:
             rows = [list(COLUMNS)]
         normalized_rows = self._normalize_rows(rows)
-        status_column_index = normalized_rows[0].index("status")
+        represented_headers = [
+            "appl_id" if str(column_name).strip() == "app_id" else column_name
+            for column_name in rows[0]
+        ]
+        headers = represented_headers if "status" in represented_headers else normalized_rows[0]
+        status_column_index = headers.index("status")
+        normalized_status_column_index = normalized_rows[0].index("status")
+        status_column_letter = self._column_letter(status_column_index + 1)
         changed_count = 0
 
-        for before_row, after_row in zip(rows[1:], normalized_rows[1:]):
+        for row_index, (before_row, after_row) in enumerate(
+            zip(rows[1:], normalized_rows[1:]),
+            start=2,
+        ):
             before_value = before_row[status_column_index] if status_column_index < len(before_row) else ""
-            after_value = after_row[status_column_index]
+            after_value = after_row[normalized_status_column_index]
             if str(before_value or "").strip() != after_value:
                 changed_count += 1
+                self._execute_with_retry(
+                    f"update migrated status cell {status_column_letter}{row_index}",
+                    lambda row_index=row_index, after_value=after_value: self.ws.update(
+                        range_name=f"{status_column_letter}{row_index}",
+                        values=[[after_value]],
+                    ),
+                )
 
-        self._write_rows(normalized_rows)
+        self._apply_status_validation(row_count=len(normalized_rows), headers=headers)
         return changed_count
 
     def get_all(self) -> list[ApplicationRecord]:

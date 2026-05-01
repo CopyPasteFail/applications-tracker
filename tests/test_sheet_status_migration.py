@@ -59,26 +59,60 @@ class SheetStatusMigrationTests(unittest.TestCase):
 
     def test_migrate_statuses_to_lifecycle_counts_changed_legacy_statuses(self) -> None:
         rows = [
-            ["appl_id", "status", "notes"],
-            ["A1", "Applied", "legacy applied"],
-            ["A2", "Interview", "legacy interview"],
-            ["A3", "Rejected", "already lifecycle"],
-            ["A4", "", "blank legacy"],
+            ["appl_id", "status", "notes", "custom_formula"],
+            ["A1", "Applied", "legacy applied", "=CUSTOM(A2)"],
+            ["A2", "Interview", "legacy interview", "=CUSTOM(A3)"],
+            ["A3", "Rejected", "already lifecycle", "=CUSTOM(A4)"],
+            ["A4", "", "blank legacy", "=CUSTOM(A5)"],
         ]
         client = SheetsClient.__new__(SheetsClient)
         client.ws = Mock()
         client.ws.get_all_values.return_value = rows
         client._execute_with_retry = Mock(side_effect=lambda _name, operation: operation())
         client._write_rows = Mock()
+        client._apply_status_validation = Mock()
 
         changed_count = client.migrate_statuses_to_lifecycle()
 
         self.assertEqual(changed_count, 3)
-        written_rows = client._write_rows.call_args.args[0]
-        status_index = written_rows[0].index("status")
+        client._write_rows.assert_not_called()
         self.assertEqual(
-            [row[status_index] for row in written_rows[1:]],
-            ["Active", "Active", "Rejected", "Active"],
+            [
+                (call.kwargs["range_name"], call.kwargs["values"])
+                for call in client.ws.update.call_args_list
+            ],
+            [
+                ("B2", [["Active"]]),
+                ("B3", [["Active"]]),
+                ("B5", [["Active"]]),
+            ],
+        )
+        client._apply_status_validation.assert_called_once_with(
+            row_count=5,
+            headers=["appl_id", "status", "notes", "custom_formula"],
+        )
+
+    def test_migrate_statuses_to_lifecycle_validates_when_no_statuses_changed(self) -> None:
+        rows = [
+            ["appl_id", "status", "custom_formula"],
+            ["A1", "Active", "=CUSTOM(A2)"],
+            ["A2", "Rejected", "=CUSTOM(A3)"],
+        ]
+        client = SheetsClient.__new__(SheetsClient)
+        client.ws = Mock()
+        client.ws.get_all_values.return_value = rows
+        client._execute_with_retry = Mock(side_effect=lambda _name, operation: operation())
+        client._write_rows = Mock()
+        client._apply_status_validation = Mock()
+
+        changed_count = client.migrate_statuses_to_lifecycle()
+
+        self.assertEqual(changed_count, 0)
+        client._write_rows.assert_not_called()
+        client.ws.update.assert_not_called()
+        client._apply_status_validation.assert_called_once_with(
+            row_count=3,
+            headers=["appl_id", "status", "custom_formula"],
         )
 
 
