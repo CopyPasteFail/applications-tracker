@@ -246,6 +246,14 @@ python tracker.py --resync-all --yes
 
 Unlike `--full-reset`, this does not delete pending drafts, pending actions, or the entire sheet.
 
+### Migrate statuses to lifecycle values
+
+```bash
+python tracker.py --migrate-statuses
+```
+
+This converts existing `status` cells to `Active`, `Paused`, `Rejected`, `Withdrawn`, or `Offer` and refreshes the Google Sheets dropdown validation. Other columns are preserved.
+
 ### Delete applications without syncing
 
 If you want to fully reset one or more application IDs without running sync:
@@ -312,7 +320,7 @@ Search by company or role, then choose an action:
 |---|---|
 | `defer` or `d` | Skip until a future date. Accepts `7d`, `2w`, or `YYYY-MM-DD` |
 | `pause` or `p` | Remove from pipeline permanently until manually resumed |
-| `resume` or `r` | Clear deferral and set status back to Applied |
+| `resume` or `r` | Clear deferral and set status back to Active |
 | `email` or `e` | Set or fix the contact email for follow-ups and withdrawals |
 | `policy` or `o` | Control per-action policies for follow-up, withdrawal, and deletion-request drafting |
 | `withdraw` or `w` | Queue a manual withdrawal for the next digest, even if the normal withdrawal threshold has not passed yet |
@@ -364,7 +372,7 @@ If a template file is missing, Gemini generates the email body as a fallback.
 | `appl_id` | Short unique ID |
 | `company` | Company name |
 | `role` | Job title |
-| `status` | Applied / Screening / Interview / Assessment / Offer / Rejected / Withdrawn / Paused |
+| `status` | Active / Paused / Rejected / Withdrawn / Offer |
 | `source` | `email` or `linkedin` |
 | `applied_date` | First contact date |
 | `last_activity_date` | Most recent email date |
@@ -394,7 +402,7 @@ If a template file is missing, Gemini generates the email body as a fallback.
 | `gmail_review_url` | Clickable Gmail link for reviewing the emails tied to this application |
 | `draft_id` | Current pending Gmail draft ID (internal) |
 
-Status compatibility note: existing Sheet statuses are still supported as-is. Internally, the tracker is beginning to group them into simpler lifecycle categories (`active`, `paused`, `rejected`, `withdrawn`, `offer`) while preserving the current Sheet values and Gemini extraction schema.
+Status note: `status` is now a lifecycle value. Older Sheet values such as `Applied`, `Screening`, `Interview`, `Assessment`, blanks, and unknown custom statuses are normalized to `Active`.
 
 ---
 

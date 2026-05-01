@@ -10126,9 +10126,9 @@ class Tracker:
             console.print("  [green]✓ Paused — removed from pipeline until manually resumed[/green]")
 
         elif action == "resume":
-            self.sheets.set_field(app["appl_id"], "status", "Applied")
+            self.sheets.set_field(app["appl_id"], "status", "Active")
             self.sheets.set_field(app["appl_id"], "deferred_until", "")
-            console.print("  [green]✓ Resumed — back in pipeline with status 'Applied'[/green]")
+            console.print("  [green]✓ Resumed — back in pipeline with status 'Active'[/green]")
 
         elif action == "email":
             current = app.get("contact_email") or ""
@@ -10184,7 +10184,7 @@ class Tracker:
             "appl_id":               str(uuid.uuid4())[:8],
             "company":              company,
             "role":                 role,
-            "status":               "Applied",
+            "status":               "Active",
             "source":               "linkedin",
             "applied_date":         date_str,
             "last_activity_date":   date_str,

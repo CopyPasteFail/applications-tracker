@@ -46,6 +46,27 @@ class ManageActionTests(unittest.TestCase):
         self.assertIsNone(Tracker._normalize_manage_action("x"))
         self.assertIsNone(Tracker._normalize_manage_action("withdraw-now"))
 
+    def test_manage_resume_sets_active_and_clears_deferral(self) -> None:
+        tracker = Tracker.__new__(Tracker)
+        tracker.sheets = Mock()
+        app = {
+            "appl_id": "app-1",
+            "company": "Acme",
+            "role": "Engineer",
+            "status": "Paused",
+            "deferred_until": "2026-05-08",
+        }
+        tracker.sheets.get_all.return_value = [app]
+
+        with patch("tracker.console.print"), patch(
+            "tracker.Prompt.ask",
+            side_effect=["", "1", "r"],
+        ):
+            tracker.manage()
+
+        tracker.sheets.set_field.assert_any_call(app["appl_id"], "status", "Active")
+        tracker.sheets.set_field.assert_any_call(app["appl_id"], "deferred_until", "")
+
     def test_describe_missing_email_policy_returns_manage_friendly_labels(self) -> None:
         self.assertEqual(Tracker._describe_missing_email_policy(""), "Ask every time")
         self.assertEqual(Tracker._describe_missing_email_policy("skip_always"), "Opt out")

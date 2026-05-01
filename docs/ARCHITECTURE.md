@@ -9,8 +9,9 @@ This document captures the durable runtime boundaries for the tracker. It is the
 
 ## Status And Policy Model
 
-- Sheet `status` values remain user-facing compatibility values.
-- Lifecycle projection is internal only and groups stored statuses into simplified categories such as `active`, `paused`, `rejected`, `withdrawn`, and `offer`.
+- Sheet `status` values are lifecycle values: `Active`, `Paused`, `Rejected`, `Withdrawn`, and `Offer`.
+- Legacy status text such as `Applied`, `Screening`, `Interview`, and `Assessment` is normalized to `Active`.
+- Mid-pipeline email signals can help identify application-related messages, but they do not create separate stored statuses or action behavior.
 - Per-action policies control whether a due action is drafted automatically.
 - Legacy opt-out columns remain compatibility inputs, but explicit policy fields take precedence.
 

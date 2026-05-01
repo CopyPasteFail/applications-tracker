@@ -161,14 +161,14 @@ function menuResume() {
 
   const res = ui.alert(
     `Resume — ${rowSummary(row)}`,
-    "Clear deferral and set status back to Applied?",
+    "Clear deferral and set status back to Active?",
     ui.ButtonSet.YES_NO
   );
   if (res !== ui.Button.YES) return;
 
-  setCellValue(row, "status",        "Applied");
+  setCellValue(row, "status",        "Active");
   setCellValue(row, "deferred_until", "");
-  ui.alert("Resumed. Back in pipeline with status Applied.");
+  ui.alert("Resumed. Back in pipeline with status Active.");
 }
 
 function menuSetEmail() {
@@ -198,7 +198,7 @@ function menuSetStatus() {
   const row      = getSelectedRow();
   if (!row) return;
   const ui       = SpreadsheetApp.getUi();
-  const statuses = ["Applied","Screening","Interview","Assessment","Offer","Rejected","Withdrawn","Paused"];
+  const statuses = ["Active","Paused","Rejected","Withdrawn","Offer"];
   const current  = getCellValue(row, "status");
 
   const res = ui.prompt(
@@ -239,7 +239,7 @@ function menuAddLinkedin() {
   row[COL.app_id             - 1] = newAppId;
   row[COL.company            - 1] = company.getResponseText().trim();
   row[COL.role               - 1] = role.getResponseText().trim();
-  row[COL.status             - 1] = "Applied";
+  row[COL.status             - 1] = "Active";
   row[COL.source             - 1] = "linkedin";
   row[COL.applied_date       - 1] = today;
   row[COL.last_activity_date - 1] = today;
