@@ -34,7 +34,7 @@ import calendar
 import copy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from email.utils import parseaddr, parsedate_to_datetime
+from email.utils import formataddr, parseaddr, parsedate_to_datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -3815,7 +3815,7 @@ class GmailClient:
         return normalized_attachment_text
 
     def create_draft(self, to: str, subject: str, body: str,
-                     from_addr: str = "") -> str:
+                     from_addr: str = "", from_name: str = "") -> str:
         if re.search(r"<[a-zA-Z][^>]*>", body):
             # Body contains HTML — send as multipart/alternative so the footer renders
             msg = MIMEMultipart("alternative")
@@ -3835,7 +3835,7 @@ class GmailClient:
             msg["To"] = to
         msg["Subject"] = subject
         if from_addr:
-            msg["From"] = from_addr
+            msg["From"] = formataddr((from_name, from_addr)) if from_name else from_addr
         raw   = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         retry_delay_seconds = DEFAULT_GOOGLE_API_TRANSIENT_INITIAL_RETRY_DELAY_SECONDS
         for attempt_number in range(DEFAULT_GOOGLE_API_TRANSIENT_RETRIES + 1):
@@ -9922,6 +9922,7 @@ class Tracker:
                     draft_id = self.gmail.create_draft(
                         target, subj, body,
                         from_addr=career_email,
+                        from_name=str(self.cfg.get("user", {}).get("name", "") or ""),
                     )
                     self.sheets.set_field(app["appl_id"], "draft_id", draft_id)
                 except Exception as e:
@@ -9933,6 +9934,7 @@ class Tracker:
                         subj,
                         body,
                         from_addr=career_email,
+                        from_name=str(self.cfg.get("user", {}).get("name", "") or ""),
                     )
                     self.sheets.set_field(app["appl_id"], "draft_id", draft_id)
                 except Exception as e:
