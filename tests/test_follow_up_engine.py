@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from tracker import (
     FollowUpEngine,
@@ -28,7 +28,7 @@ class FollowUpEngineTests(unittest.TestCase):
             today_provider=lambda: FixedDateTime.now(timezone.utc).date(),
         )
 
-    def test_recent_follow_up_delays_withdrawal(self) -> None:
+    def test_recent_follow_up_does_not_delay_withdrawal(self) -> None:
         app = {
             "appl_id": "WUR-AIP-1",
             "status": "Active",
@@ -41,7 +41,117 @@ class FollowUpEngineTests(unittest.TestCase):
 
         actions = self.engine.compute_actions([app])
 
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["type"], "withdraw")
+
+    def test_appdome_style_recent_follow_up_still_withdraws_after_company_silence(self) -> None:
+        engine = FollowUpEngine(
+            {
+                "thresholds": {
+                    "follow_up_days": 8,
+                    "withdraw_days": 16,
+                    "follow_up_repeat_days": 7,
+                }
+            },
+            today_provider=lambda: date(2026, 5, 1),
+        )
+        app = {
+            "appl_id": "APP-AIE-1",
+            "company": "Appdome",
+            "role": "AI Engineer",
+            "status": "Active",
+            "source": "email",
+            "applied_date": "2026-04-01",
+            "last_activity_date": "2026-04-01",
+            "follow_up_sent_date": "2026-04-20",
+            "follow_up_count": "2",
+            "withdrawal_sent_date": "",
+        }
+
+        actions = engine.compute_actions([app])
+
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["type"], "withdraw")
+        self.assertEqual(actions[0]["app"]["_days"], 30)
+
+    def test_appdome_style_recent_follow_up_still_creates_withdraw_manual_review_candidate(self) -> None:
+        engine = FollowUpEngine(
+            {
+                "thresholds": {
+                    "follow_up_days": 8,
+                    "withdraw_days": 16,
+                    "follow_up_repeat_days": 7,
+                }
+            },
+            today_provider=lambda: date(2026, 5, 1),
+        )
+        app = {
+            "appl_id": "APP-AIE-1",
+            "company": "Appdome",
+            "role": "AI Engineer",
+            "status": "Active",
+            "source": "email",
+            "applied_date": "2026-04-01",
+            "last_activity_date": "2026-04-01",
+            "follow_up_sent_date": "2026-04-20",
+            "follow_up_count": "2",
+            "withdraw_policy": "ask_when_due",
+            "withdrawal_sent_date": "",
+        }
+
+        candidates = engine.compute_manual_review_candidates([app])
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["type"], "withdraw")
+        self.assertEqual(candidates[0]["reason"], "Ghosted — 30d since last activity")
+
+    def test_repeat_follow_up_spacing_suppresses_follow_up_before_withdrawal_is_due(self) -> None:
+        app = {
+            "appl_id": "WUR-AIP-26",
+            "status": "Active",
+            "applied_date": "2026-03-27",
+            "last_activity_date": "2026-03-27",
+            "follow_up_sent_date": "2026-04-01",
+            "follow_up_count": "1",
+            "withdrawal_sent_date": "",
+        }
+
+        actions = self.engine.compute_actions([app])
+
         self.assertEqual(actions, [])
+
+    def test_repeat_follow_up_spacing_allows_follow_up_before_withdrawal_is_due(self) -> None:
+        app = {
+            "appl_id": "WUR-AIP-27",
+            "status": "Active",
+            "applied_date": "2026-03-27",
+            "last_activity_date": "2026-03-27",
+            "follow_up_sent_date": "2026-03-27",
+            "follow_up_count": "1",
+            "withdrawal_sent_date": "",
+        }
+
+        actions = self.engine.compute_actions([app])
+
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["type"], "follow_up")
+        self.assertEqual(actions[0]["follow_up_n"], 2)
+
+    def test_withdrawal_wins_when_repeat_follow_up_and_withdrawal_are_due(self) -> None:
+        app = {
+            "appl_id": "WUR-AIP-28",
+            "status": "Active",
+            "applied_date": "2026-03-20",
+            "last_activity_date": "2026-03-20",
+            "follow_up_sent_date": "2026-03-20",
+            "follow_up_count": "1",
+            "withdrawal_sent_date": "",
+        }
+
+        actions = self.engine.compute_actions([app])
+
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["type"], "withdraw")
 
     def test_old_follow_up_allows_withdrawal_after_threshold(self) -> None:
         app = {

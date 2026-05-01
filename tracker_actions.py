@@ -193,19 +193,19 @@ class FollowUpEngine:
         self.deletion_request_days = t.get("deletion_request_days", 0)
         self._today_provider = today_provider or _default_today_utc
 
-    def _get_withdraw_reference_date(self, app: ApplicationRecord) -> Optional[date]:
+    def _get_company_activity_reference_date(self, app: ApplicationRecord) -> Optional[date]:
         """
-        Choose the date that should start the withdrawal countdown for one application.
+        Choose the company/application activity date for action timing.
 
         Inputs:
-        - app: Application row containing activity and follow-up timestamps.
+        - app: Application row containing activity timestamps.
 
         Outputs:
-        - The most recent relevant date for withdrawal timing, or None when no usable date exists.
+        - The most recent company/application activity date, or None when no usable date exists.
 
         Edge cases:
         - Invalid dates are ignored instead of raising.
-        - A sent follow-up resets the withdrawal clock only when it is newer than the last activity.
+        - User-sent follow-ups are ignored; they only affect repeat follow-up spacing.
 
         Atomicity / concurrency:
         - Pure helper with no shared mutable state.
@@ -215,13 +215,18 @@ class FollowUpEngine:
             for parsed_datetime in (
                 parse_iso_date(str(app.get("last_activity_date", "") or "").strip()),
                 parse_iso_date(str(app.get("applied_date", "") or "").strip()),
-                parse_iso_date(str(app.get("follow_up_sent_date", "") or "").strip()),
             )
             if parsed_datetime is not None
         ]
         if not candidate_datetimes:
             return None
         return max(candidate_datetimes).date()
+
+    def _get_last_follow_up_date(self, app: ApplicationRecord) -> Optional[date]:
+        parsed_datetime = parse_iso_date(str(app.get("follow_up_sent_date", "") or "").strip())
+        if parsed_datetime is None:
+            return None
+        return parsed_datetime.date()
 
     def _manual_review_candidate(
         self,
@@ -273,57 +278,55 @@ class FollowUpEngine:
                 except ValueError:
                     pass
 
-            ref_date = self._get_withdraw_reference_date(app)
+            ref_date = self._get_company_activity_reference_date(app)
             if ref_date is None:
                 continue
 
-            days = (today - ref_date).days
+            company_silence_days = (today - ref_date).days
             deletion_request_already_sent = bool(app.get("deletion_request_sent_date"))
 
             if status == "Rejected":
                 if deletion_request_already_sent:
                     continue
                 if (
-                    days >= self.deletion_request_days
+                    company_silence_days >= self.deletion_request_days
                     and get_effective_action_policy(app, "deletion_request") == "ask_when_due"
                 ):
                     candidates.append(
                         self._manual_review_candidate(
                             app,
                             "deletion_request",
-                            f"Rejected — {days}d since last activity",
+                            f"Rejected — {company_silence_days}d since last activity",
                         )
                     )
                 continue
 
             if (
-                days >= self.withdraw_days
+                company_silence_days >= self.withdraw_days
                 and get_effective_action_policy(app, "withdraw") == "ask_when_due"
             ):
                 candidates.append(
                     self._manual_review_candidate(
                         app,
                         "withdraw",
-                        f"Ghosted — {days}d since last activity",
+                        f"Ghosted — {company_silence_days}d since last activity",
                     )
                 )
                 continue
 
-            if days >= self.follow_up_days and get_effective_action_policy(app, "follow_up") == "ask_when_due":
-                last_fu = app.get("follow_up_sent_date")
-                if last_fu:
-                    try:
-                        last_fu_date = datetime.fromisoformat(last_fu[:10]).date()
-                        if (today - last_fu_date).days < self.follow_up_repeat_days:
-                            continue
-                    except ValueError:
-                        pass
+            if (
+                company_silence_days >= self.follow_up_days
+                and get_effective_action_policy(app, "follow_up") == "ask_when_due"
+            ):
+                last_fu_date = self._get_last_follow_up_date(app)
+                if last_fu_date and (today - last_fu_date).days < self.follow_up_repeat_days:
+                    continue
                 follow_up_n = int(app.get("follow_up_count") or 0) + 1
                 candidates.append(
                     self._manual_review_candidate(
                         app,
                         "follow_up",
-                        f"{days}d inactive — follow-up #{follow_up_n}",
+                        f"{company_silence_days}d inactive — follow-up #{follow_up_n}",
                         follow_up_n,
                     )
                 )
@@ -366,12 +369,12 @@ class FollowUpEngine:
                 except ValueError:
                     pass
 
-            ref_date = self._get_withdraw_reference_date(app)
+            ref_date = self._get_company_activity_reference_date(app)
             if ref_date is None:
                 continue
 
-            days = (today - ref_date).days
-            app["_days"] = days  # attach for email generation
+            company_silence_days = (today - ref_date).days
+            app["_days"] = company_silence_days  # attach for email generation
 
             deletion_request_already_sent = bool(app.get("deletion_request_sent_date"))
 
@@ -381,41 +384,39 @@ class FollowUpEngine:
                     "deletion_request",
                 ):
                     continue
-                if days >= self.deletion_request_days:
+                if company_silence_days >= self.deletion_request_days:
                     actions.append({
                         "type": "deletion_request",
                         "app": dict(app),
-                        "reason": f"Rejected — {days}d since last activity",
+                        "reason": f"Rejected — {company_silence_days}d since last activity",
                     })
                 continue
 
             if (
-                days >= self.withdraw_days
+                company_silence_days >= self.withdraw_days
                 and not action_blocks_automatic_digest(app, "withdraw")
             ):
                 actions.append({
                     "type": "withdraw",
                     "app": dict(app),
-                    "reason": f"Ghosted — {days}d since last activity",
+                    "reason": f"Ghosted — {company_silence_days}d since last activity",
                 })
                 continue
 
             # Follow-up threshold
-            if days >= self.follow_up_days and not action_blocks_automatic_digest(app, "follow_up"):
+            if (
+                company_silence_days >= self.follow_up_days
+                and not action_blocks_automatic_digest(app, "follow_up")
+            ):
                 # Don't re-follow-up if we already sent one recently
-                last_fu = app.get("follow_up_sent_date")
-                if last_fu:
-                    try:
-                        last_fu_date = datetime.fromisoformat(last_fu[:10]).date()
-                        if (today - last_fu_date).days < self.follow_up_repeat_days:
-                            continue
-                    except ValueError:
-                        pass
+                last_fu_date = self._get_last_follow_up_date(app)
+                if last_fu_date and (today - last_fu_date).days < self.follow_up_repeat_days:
+                    continue
                 follow_up_n = int(app.get("follow_up_count") or 0) + 1
                 actions.append({
                     "type": "follow_up",
                     "app": dict(app),
-                    "reason": f"{days}d inactive — follow-up #{follow_up_n}",
+                    "reason": f"{company_silence_days}d inactive — follow-up #{follow_up_n}",
                     "follow_up_n": follow_up_n,
                 })
 
