@@ -8119,12 +8119,16 @@ class Tracker:
 
             console.print(f"  Proposed email: [cyan]{candidate_email}[/cyan]")
             confirmation_choice = Prompt.ask(
-                "  Confirm email (y)es/(f)ix",
+                "    Confirm email? [Enter/y=yes, f=fix]",
                 choices=["y", "f"],
                 default="y",
+                show_choices=False,
+                show_default=False,
             ).strip().lower()
+
             if confirmation_choice == "y":
                 return candidate_email
+
             candidate_email = Prompt.ask("  Fix email").strip().lower()
 
     def _resolve_missing_email_action(
@@ -8149,10 +8153,9 @@ class Tracker:
                 f"  Search: [link={google_search_url}]{google_search_url}[/link]"
             )
         console.print(
-            "  Enter an email address directly, or choose: "
+            "  Type an email address directly and press Enter, or choose: "
             "(o) skip once  (a) skip always  (d) create empty draft"
         )
-        console.print("  Press Enter to manually type an email")
 
         while True:
             choice = Prompt.ask("  Select option", default="").strip()
