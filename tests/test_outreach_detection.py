@@ -100,6 +100,31 @@ class OutreachDetectionTests(unittest.TestCase):
         self.assertTrue(has_strong_application_signal(message))
         self.assertFalse(is_unsolicited_recruiter_outreach_email(message))
 
+    def test_clear_application_confirmation_phrases_are_strong_signals(self) -> None:
+        confirmation_phrases = [
+            "Thanks for applying to Google!",
+            "Thank you for applying to Example Corp.",
+            "Thanks for your application.",
+            "We received your application.",
+            "Your application has been received.",
+            "Thanks for your interest in joining Example Corp.",
+        ]
+
+        for phrase in confirmation_phrases:
+            with self.subTest(phrase=phrase):
+                message = make_email_message(
+                    from_header="Example Recruiting <noreply@example.com>",
+                    subject="Application update",
+                    body=(
+                        f"{phrase}\n\n"
+                        "Our recruiting team will contact you if your skills and experience "
+                        "are a strong match for the role."
+                    ),
+                )
+
+                self.assertTrue(has_strong_application_signal(message))
+                self.assertFalse(is_unsolicited_recruiter_outreach_email(message))
+
     def test_interview_invite_exposes_scheduled_activity_date(self) -> None:
         message = make_email_message(
             from_header="Recruiter Name <recruiter@example.teamtailor-mail.com>",

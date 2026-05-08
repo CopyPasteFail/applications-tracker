@@ -122,6 +122,105 @@ class RejectionDeferResetTests(unittest.TestCase):
         self.assertEqual(result.updates[0]["company"], "Oversight")
         self.assertEqual(result.updates[0]["role"], "Platform Engineer")
 
+    def test_google_application_confirmation_is_not_downgraded_to_ignore(self) -> None:
+        grouper = self._build_grouper()
+        new_email = {
+            "id": "19e07ed3583c2beb",
+            "thread_id": "thread-google-application",
+            "internet_message_id": "<19e07ed3583c2beb@google.com>",
+            "from": "Google <noreply@google.com>",
+            "subject": "Thanks for applying to Google",
+            "snippet": (
+                "Thanks for applying to Google! Our recruiting team will contact you if your "
+                "skills and experience are a strong match for the role."
+            ),
+            "body": (
+                "Thanks for applying to Google!\n\n"
+                "Our recruiting team will contact you if your skills and experience are a "
+                "strong match for the role."
+            ),
+            "date": "Tue, 07 Apr 2026 10:05:41 +0300",
+        }
+
+        with patch.object(
+            grouper,
+            "inspect_group_emails",
+            return_value={
+                "results": [
+                    {
+                        "action": "new_application",
+                        "email_id": "19e07ed3583c2beb",
+                        "extracted": {
+                            "company": "Google",
+                            "role": "Unknown",
+                            "status": "Active",
+                        },
+                    }
+                ],
+                "missing_email_ids": [],
+                "duplicate_email_ids": [],
+                "unexpected_email_ids": [],
+            },
+        ):
+            result = grouper.group_emails([new_email], [])
+
+        self.assertEqual(result.ignored_email_count, 0)
+        self.assertEqual(result.new_application_email_count, 1)
+        self.assertEqual(result.created_application_count, 1)
+        self.assertEqual(result.handled_message_ids, ["19e07ed3583c2beb"])
+        self.assertEqual(len(result.updates), 1)
+        self.assertEqual(result.updates[0]["company"], "Google")
+        self.assertEqual(result.updates[0]["role"], "Unknown")
+        self.assertEqual(result.updates[0]["status"], "Active")
+        self.assertEqual(result.updates[0]["email_ids"], '["19e07ed3583c2beb"]')
+
+    def test_unsolicited_recruiter_new_application_result_is_still_ignored(self) -> None:
+        grouper = self._build_grouper()
+        new_email = {
+            "id": "msg-unsolicited-1",
+            "thread_id": "thread-unsolicited-1",
+            "internet_message_id": "<msg-unsolicited-1@example.com>",
+            "from": "Agency Recruiter <recruiter@staffing-example.com>",
+            "subject": "Freelance embedded linux - Start ASAP - 12 months + - Remote / Berlin",
+            "snippet": "A client of mine based in Berlin is looking for a freelance embedded engineer.",
+            "body": (
+                "Hi Omer,\n\n"
+                "A client of mine based in Berlin is looking for a FREELANCE Embedded "
+                "engineer to join the team for a 12-month initial contract.\n\n"
+                "If you wish to be considered for the position available, please e-mail an "
+                "up-to-date CV with a contact number to recruiter@staffing-example.com."
+            ),
+            "date": "Tue, 07 Apr 2026 10:05:41 +0300",
+        }
+
+        with patch.object(
+            grouper,
+            "inspect_group_emails",
+            return_value={
+                "results": [
+                    {
+                        "action": "new_application",
+                        "email_id": "msg-unsolicited-1",
+                        "extracted": {
+                            "company": "Staffing Example",
+                            "role": "Freelance Embedded Engineer",
+                            "status": "Active",
+                        },
+                    }
+                ],
+                "missing_email_ids": [],
+                "duplicate_email_ids": [],
+                "unexpected_email_ids": [],
+            },
+        ):
+            result = grouper.group_emails([new_email], [])
+
+        self.assertEqual(result.updates, [])
+        self.assertEqual(result.ignored_email_count, 1)
+        self.assertEqual(result.new_application_email_count, 0)
+        self.assertEqual(result.created_application_count, 0)
+        self.assertEqual(result.handled_message_ids, ["msg-unsolicited-1"])
+
     def test_reply_on_existing_application_thread_overrides_outreach_ignore(self) -> None:
         grouper = self._build_grouper()
         new_email = {

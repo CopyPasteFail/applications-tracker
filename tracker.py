@@ -2460,6 +2460,46 @@ def choose_latest_activity_date(*date_values: str) -> str:
     return max(valid_date_values)
 
 
+def has_clear_application_confirmation_language(email_message: GmailMessage) -> bool:
+    """
+    Determine whether an email explicitly confirms receipt of an application.
+
+    Inputs:
+    - email_message: Parsed Gmail message dictionary containing subject, snippet, and body text.
+
+    Outputs:
+    - True when common application-confirmation wording is present.
+
+    Edge cases:
+    - This helper only checks explicit receipt/thanks-for-applying language; generic recruiting
+      or noreply senders do not count by themselves.
+
+    Atomicity / concurrency:
+    - Pure helper with no shared mutable state.
+    """
+    message_text_sources = [
+        str(email_message.get("subject", "") or ""),
+        str(email_message.get("snippet", "") or ""),
+        str(email_message.get("body", "") or ""),
+    ]
+    normalized_message_text = "\n".join(html.unescape(text) for text in message_text_sources)
+
+    confirmation_patterns = (
+        r"\bthanks for applying\b",
+        r"\bthank you for applying\b",
+        r"\bthanks for your application\b",
+        r"\bwe(?:'|’)ve received your application\b",
+        r"\bwe have received your application\b",
+        r"\bwe received your application\b",
+        r"\byour application has been received\b",
+        r"\bthanks for your interest in joining\b",
+    )
+    return any(
+        re.search(pattern, normalized_message_text, flags=re.IGNORECASE | re.DOTALL)
+        for pattern in confirmation_patterns
+    )
+
+
 def has_strong_application_signal(email_message: GmailMessage) -> bool:
     """
     Determine whether an email clearly refers to a submitted application or active pipeline.
@@ -2484,6 +2524,8 @@ def has_strong_application_signal(email_message: GmailMessage) -> bool:
         str(email_message.get("body", "") or ""),
     ]
     normalized_message_text = "\n".join(html.unescape(text) for text in message_text_sources)
+    if has_clear_application_confirmation_language(email_message):
+        return True
 
     strong_signal_patterns = (
         r"\bwe(?:'|’)ve received your application\b",
