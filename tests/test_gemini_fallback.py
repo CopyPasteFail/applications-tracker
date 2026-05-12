@@ -63,7 +63,7 @@ class GeminiFallbackTests(unittest.TestCase):
 
     def test_generate_content_falls_back_to_next_model_after_high_demand_503(self) -> None:
         grouper = AIGrouper.__new__(AIGrouper)
-        grouper.model_names = ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash"]
+        grouper.model_names = ["gemini-3.1-flash-lite", "gemini-2.5-flash"]
         grouper.client = Mock()
         grouper.client.models.generate_content.side_effect = [
             Exception(
@@ -81,13 +81,13 @@ class GeminiFallbackTests(unittest.TestCase):
         self.assertEqual(grouper.client.models.generate_content.call_count, 2)
         console_print.assert_called_once()
         printed_message = console_print.call_args.args[0]
-        self.assertIn("gemini-3.1-flash-lite-preview", printed_message)
+        self.assertIn("gemini-3.1-flash-lite", printed_message)
         self.assertIn("gemini-2.5-flash", printed_message)
         self.assertIn("high demand", printed_message.lower())
 
     def test_generate_content_keeps_non_transient_503_as_tracker_error(self) -> None:
         grouper = AIGrouper.__new__(AIGrouper)
-        grouper.model_names = ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash"]
+        grouper.model_names = ["gemini-3.1-flash-lite", "gemini-2.5-flash"]
         grouper.client = Mock()
         grouper.client.models.generate_content.side_effect = Exception(
             "503 INTERNAL. {'error': {'code': 503, 'message': 'backend misconfigured'}}"
