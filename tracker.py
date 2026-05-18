@@ -459,6 +459,30 @@ class GmailFetchResult:
 
 
 @dataclass(frozen=True)
+class SyncSummaryChange:
+    prefix: str
+    application: ApplicationRecord
+    detail_lines: list[str]
+
+
+@dataclass(frozen=True)
+class SyncSummary:
+    query: str
+    lookback_days: int
+    existing_sheet_record_count: int
+    total_matching_email_count: Optional[int]
+    new_unseen_email_count: Optional[int]
+    relevant_email_count: Optional[int]
+    ignored_email_count: Optional[int]
+    merged_email_count: Optional[int]
+    created_application_count: int
+    updated_application_count: int
+    unchanged_application_count: Optional[int]
+    rows_written: int
+    changes: list[SyncSummaryChange]
+
+
+@dataclass(frozen=True)
 class GmailProcessingLabelConfig:
     """
     Describe the Gmail labels used to track pipeline progress for processed messages.
@@ -665,6 +689,209 @@ def safe_json_loads(
     except json.JSONDecodeError as error:
         console.print(f"[yellow]Invalid JSON in {context}: {error}. Using fallback value.[/yellow]")
         return default
+
+
+def _application_email_id_count(application_row: ApplicationRecord) -> int:
+    try:
+        parsed_email_ids = json.loads(str(application_row.get("email_ids") or "[]"))
+    except json.JSONDecodeError:
+        parsed_email_ids = []
+    email_ids = parsed_email_ids if isinstance(parsed_email_ids, list) else []
+    return len(deduplicate_preserving_order([
+        str(email_id or "").strip()
+        for email_id in email_ids
+        if str(email_id or "").strip()
+    ]))
+
+
+def _summary_display_value(raw_value: object) -> str:
+    normalized_value = str(raw_value or "").strip()
+    return normalized_value if normalized_value else "empty"
+
+
+def _latest_updates_by_appl_id(
+    application_rows: list[ApplicationRecord],
+) -> dict[str, ApplicationRecord]:
+    latest_updates: dict[str, ApplicationRecord] = {}
+    for application_row in application_rows:
+        appl_id = str(application_row.get("appl_id", "") or "").strip()
+        if appl_id:
+            latest_updates[appl_id] = application_row
+    return latest_updates
+
+
+def _format_new_application_change_details(application_row: ApplicationRecord) -> list[str]:
+    detail_lines: list[str] = []
+    for field_name in ["status", "last_activity_date", "contact_email"]:
+        field_value = str(application_row.get(field_name, "") or "").strip()
+        if field_value:
+            detail_lines.append(f"{field_name}: {field_value}")
+
+    email_id_count = _application_email_id_count(application_row)
+    if email_id_count > 0:
+        detail_lines.append(f"email_ids: +{email_id_count}")
+    return detail_lines
+
+
+def _format_updated_application_change_details(
+    previous_application_row: ApplicationRecord,
+    current_application_row: ApplicationRecord,
+) -> list[str]:
+    detail_lines: list[str] = []
+    for field_name in ["company", "role", "status", "last_activity_date", "contact_email"]:
+        previous_value = str(previous_application_row.get(field_name, "") or "").strip()
+        current_value = str(current_application_row.get(field_name, "") or "").strip()
+        if previous_value != current_value:
+            detail_lines.append(
+                f"{field_name}: {_summary_display_value(previous_value)} -> "
+                f"{_summary_display_value(current_value)}"
+            )
+
+    previous_email_id_count = _application_email_id_count(previous_application_row)
+    current_email_id_count = _application_email_id_count(current_application_row)
+    email_id_delta = current_email_id_count - previous_email_id_count
+    if email_id_delta:
+        detail_lines.append(f"email_ids: {email_id_delta:+d}")
+    return detail_lines
+
+
+def build_sync_summary(
+    *,
+    query: str,
+    lookback_days: int,
+    existing_applications: list[ApplicationRecord],
+    total_matching_email_count: Optional[int],
+    new_unseen_email_count: Optional[int],
+    matched_existing_email_count: int,
+    new_application_email_count: int,
+    ignored_email_count: int,
+    updated_existing_application_ids: set[str],
+    created_application_ids: set[str],
+    all_updates: list[ApplicationRecord],
+    rows_written: int,
+) -> SyncSummary:
+    existing_by_appl_id = _latest_updates_by_appl_id(existing_applications)
+    final_updates_by_appl_id = _latest_updates_by_appl_id(all_updates)
+    relevant_email_count = matched_existing_email_count + new_application_email_count
+    unique_updated_appl_ids = set(final_updates_by_appl_id)
+    merged_email_count = max(0, relevant_email_count - len(unique_updated_appl_ids))
+
+    changes: list[SyncSummaryChange] = []
+    for appl_id in sorted(created_application_ids):
+        application_row = final_updates_by_appl_id.get(appl_id)
+        if not application_row:
+            continue
+        changes.append(SyncSummaryChange(
+            prefix="NEW",
+            application=application_row,
+            detail_lines=_format_new_application_change_details(application_row),
+        ))
+
+    updated_application_count = 0
+    unchanged_application_count = 0
+    for appl_id in sorted(updated_existing_application_ids):
+        application_row = final_updates_by_appl_id.get(appl_id)
+        previous_application_row = existing_by_appl_id.get(appl_id)
+        if not application_row:
+            continue
+        if previous_application_row is None:
+            updated_application_count += 1
+            changes.append(SyncSummaryChange(
+                prefix="UPD",
+                application=application_row,
+                detail_lines=[],
+            ))
+            continue
+
+        detail_lines = _format_updated_application_change_details(
+            previous_application_row,
+            application_row,
+        )
+        if detail_lines:
+            updated_application_count += 1
+            changes.append(SyncSummaryChange(
+                prefix="UPD",
+                application=application_row,
+                detail_lines=detail_lines,
+            ))
+        else:
+            unchanged_application_count += 1
+
+    return SyncSummary(
+        query=str(query or ""),
+        lookback_days=int(lookback_days),
+        existing_sheet_record_count=len(existing_applications),
+        total_matching_email_count=total_matching_email_count,
+        new_unseen_email_count=new_unseen_email_count,
+        relevant_email_count=relevant_email_count,
+        ignored_email_count=ignored_email_count,
+        merged_email_count=merged_email_count,
+        created_application_count=len(created_application_ids),
+        updated_application_count=updated_application_count,
+        unchanged_application_count=unchanged_application_count,
+        rows_written=rows_written,
+        changes=changes,
+    )
+
+
+def format_sync_summary_lines(sync_summary: SyncSummary) -> list[str]:
+    section_rule = "────────────────────────────────────────"
+    lines = [
+        "",
+        "Sync summary",
+        section_rule,
+        f"Gmail query: {sync_summary.query}",
+        f"Lookback window: {sync_summary.lookback_days} days",
+        f"Existing Sheet records: {sync_summary.existing_sheet_record_count}",
+        "",
+        "Messages",
+        section_rule,
+    ]
+
+    if sync_summary.total_matching_email_count is not None:
+        lines.append(
+            f"Unprocessed Gmail matches in window: {sync_summary.total_matching_email_count}"
+        )
+    if sync_summary.new_unseen_email_count is not None:
+        lines.append(f"New unseen emails: {sync_summary.new_unseen_email_count}")
+    if sync_summary.relevant_email_count is not None:
+        lines.append(f"Relevant emails: {sync_summary.relevant_email_count}")
+    if sync_summary.ignored_email_count is not None:
+        lines.append(f"Ignored emails: {sync_summary.ignored_email_count}")
+    if sync_summary.merged_email_count is not None:
+        lines.append(f"Emails merged into shared records: {sync_summary.merged_email_count}")
+
+    lines.extend([
+        "",
+        "Applications",
+        section_rule,
+        f"Created: {sync_summary.created_application_count}",
+        f"Updated: {sync_summary.updated_application_count}",
+    ])
+    if sync_summary.unchanged_application_count is not None:
+        lines.append(f"Unchanged: {sync_summary.unchanged_application_count}")
+    lines.extend([
+        f"Rows written: {sync_summary.rows_written}",
+        "",
+        "Changes",
+        section_rule,
+    ])
+
+    if not sync_summary.changes:
+        lines.append("No created or updated application rows.")
+        return lines
+
+    for change_index, change in enumerate(sync_summary.changes):
+        if change_index > 0:
+            lines.append("")
+        application_row = change.application
+        appl_id = str(application_row.get("appl_id", "") or "").strip()
+        company = str(application_row.get("company", "") or "").strip()
+        role = str(application_row.get("role", "") or "").strip()
+        lines.append(f"{change.prefix}  {appl_id}  {company}  {role}".rstrip())
+        for detail_line in change.detail_lines:
+            lines.append(f"     {detail_line}")
+    return lines
 
 
 def extract_first_json_object(raw_text: str) -> Optional[JsonObject]:
@@ -7098,31 +7325,42 @@ class Tracker:
     def _finalize_completed_sync_run(self, run_state: JsonObject) -> None:
         all_updates = cast(list[ApplicationRecord], run_state.get("all_updates", []))
         query = str(run_state.get("query", "") or "")
+        lookback_days = int(run_state.get("lookback_days", 90))
+        existing_applications = cast(list[ApplicationRecord], run_state.get("existing_apps", []))
         matched_existing_email_count = int(run_state.get("matched_existing_email_count", 0))
         new_application_email_count = int(run_state.get("new_application_email_count", 0))
         ignored_email_count = int(run_state.get("ignored_email_count", 0))
         updated_existing_application_ids = set(cast(list[str], run_state.get("updated_existing_application_ids", [])))
         created_application_ids = set(cast(list[str], run_state.get("created_application_ids", [])))
 
-        relevant_email_count = matched_existing_email_count + new_application_email_count
-        unique_updated_appl_ids = {update["appl_id"] for update in all_updates if update.get("appl_id")}
-        merged_email_count = max(0, relevant_email_count - len(unique_updated_appl_ids))
-        console.print(
-            "  Grouping summary: "
-            f"[green]{relevant_email_count}[/green] relevant emails, "
-            f"[green]{ignored_email_count}[/green] ignored"
-        )
-        console.print(
-            "  Application impact: "
-            f"[green]{len(updated_existing_application_ids)}[/green] existing applications updated, "
-            f"[green]{len(created_application_ids)}[/green] new applications created, "
-            f"[green]{merged_email_count}[/green] emails merged into shared records"
-        )
-
         all_updates = self._backfill_statuses_from_gmail(all_updates, base_query=query)
         all_updates = self._backfill_missing_companies_from_gmail(all_updates, base_query=query)
         all_updates = self._backfill_missing_roles_from_gmail(all_updates, base_query=query)
         run_state["all_updates"] = all_updates
+        total_matching_email_count = (
+            int(run_state["total_matching_email_count"])
+            if "total_matching_email_count" in run_state
+            else None
+        )
+        new_unseen_email_count = (
+            int(run_state["new_unseen_email_count"])
+            if "new_unseen_email_count" in run_state
+            else None
+        )
+        sync_summary = build_sync_summary(
+            query=query,
+            lookback_days=lookback_days,
+            existing_applications=existing_applications,
+            total_matching_email_count=total_matching_email_count,
+            new_unseen_email_count=new_unseen_email_count,
+            matched_existing_email_count=matched_existing_email_count,
+            new_application_email_count=new_application_email_count,
+            ignored_email_count=ignored_email_count,
+            updated_existing_application_ids=updated_existing_application_ids,
+            created_application_ids=created_application_ids,
+            all_updates=all_updates,
+            rows_written=len(all_updates),
+        )
 
         console.print(f"  Upserting [green]{len(all_updates)}[/green] records …")
         self.sheets.upsert_many(all_updates)
@@ -7174,6 +7412,8 @@ class Tracker:
 
         self._delete_grouping_run_state(str(run_state.get("run_id", "") or "").strip())
         console.print("[bold green]  OK Sync complete[/bold green]")
+        for summary_line in format_sync_summary_lines(sync_summary):
+            console.print(summary_line)
         console.print(
             f"  Sheet: [link={self.sheets.get_spreadsheet_url()}]{self.sheets.get_spreadsheet_url()}[/link]"
         )
@@ -8801,7 +9041,6 @@ class Tracker:
         state_retention_days = max(30, int(lookback))
 
         existing, merged_duplicate_sheet_row_count = self.sheets.consolidate_similar_applications()
-        console.print(f"  Existing records in Sheets: [green]{len(existing)}[/green]")
         if merged_duplicate_sheet_row_count > 0:
             console.print(
                 f"  Consolidated [green]{merged_duplicate_sheet_row_count}[/green] duplicate sheet rows "
@@ -8833,7 +9072,6 @@ class Tracker:
         self.gmail.ensure_processing_labels(self.processing_labels)
 
         filtered_query = f"({query}) -label:{processed_label_query_name}"
-        console.print(f"  Query: [cyan]{query}[/cyan]  |  Lookback: [cyan]{lookback}d[/cyan]")
         console.print(f"  Processing label: [cyan]{processed_label_name}[/cyan]")
         gmail_fetch_result = self.gmail.get_emails(
             query=filtered_query,
@@ -8847,14 +9085,26 @@ class Tracker:
                 str(email_message.get("id", "") or ""),
             ),
         )
-        console.print(
-            f"  Unprocessed Gmail matches in window: "
-            f"[green]{gmail_fetch_result.total_matching_email_count}[/green]"
-        )
-        console.print(f"  New unseen emails: [green]{len(new_emails)}[/green]")
 
         if not new_emails:
             console.print("  [yellow]Nothing new to process.[/yellow]")
+            sync_summary = build_sync_summary(
+                query=str(query or ""),
+                lookback_days=int(lookback),
+                existing_applications=existing,
+                total_matching_email_count=gmail_fetch_result.total_matching_email_count,
+                new_unseen_email_count=len(new_emails),
+                matched_existing_email_count=0,
+                new_application_email_count=0,
+                ignored_email_count=0,
+                updated_existing_application_ids=set(),
+                created_application_ids=set(),
+                all_updates=[],
+                rows_written=0,
+            )
+            console.print("[bold green]  OK Sync complete[/bold green]")
+            for summary_line in format_sync_summary_lines(sync_summary):
+                console.print(summary_line)
             console.print(f"  Sheet: [link={self.sheets.get_spreadsheet_url()}]{self.sheets.get_spreadsheet_url()}[/link]")
             return
 
@@ -8887,6 +9137,8 @@ class Tracker:
             "continue_to_digest": bool(continue_to_digest),
             "query": str(query or ""),
             "lookback_days": int(lookback),
+            "total_matching_email_count": gmail_fetch_result.total_matching_email_count,
+            "new_unseen_email_count": len(new_emails),
             "state_retention_days": state_retention_days,
             "transport_window_size": transport_window_size,
             "cluster_size_limit": cluster_size_limit,
