@@ -26,8 +26,10 @@ google_sheets:
 gemini:
   api_key: "AIza..."
   models:
-    - "gemini-2.5-flash-lite"
+    - "gemini-3-flash"
+    - "gemini-3.1-flash-lite"
     - "gemini-2.5-flash"
+    - "gemini-2.5-flash-lite"
     # Web contact discovery uses Gemini Google Search grounding on the free tier.
     # Keep at least one of the two models above in this list.
   grouping_batch_size: 25

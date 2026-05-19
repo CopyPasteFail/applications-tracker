@@ -7,7 +7,7 @@ from tracker import AIGrouper, TrackerError
 class GeminiFallbackTests(unittest.TestCase):
     def test_generate_content_retries_same_model_after_transport_disconnect(self) -> None:
         grouper = AIGrouper.__new__(AIGrouper)
-        grouper.model_names = ["gemini-3-flash-preview"]
+        grouper.model_names = ["gemini-3.1-flash-lite"]
         grouper.client = Mock()
         grouper.client.models.generate_content.side_effect = [
             Exception("Server disconnected without sending a response."),
@@ -26,7 +26,7 @@ class GeminiFallbackTests(unittest.TestCase):
 
     def test_generate_content_falls_back_after_repeated_transport_disconnects(self) -> None:
         grouper = AIGrouper.__new__(AIGrouper)
-        grouper.model_names = ["gemini-3-flash-preview", "gemini-2.5-flash"]
+        grouper.model_names = ["gemini-3.1-flash-lite", "gemini-2.5-flash"]
         grouper.client = Mock()
         grouper.client.models.generate_content.side_effect = [
             Exception("Server disconnected without sending a response."),
@@ -45,7 +45,7 @@ class GeminiFallbackTests(unittest.TestCase):
 
     def test_generate_content_retries_after_windows_connection_aborted_error(self) -> None:
         grouper = AIGrouper.__new__(AIGrouper)
-        grouper.model_names = ["gemini-3-flash-preview"]
+        grouper.model_names = ["gemini-3.1-flash-lite"]
         grouper.client = Mock()
         grouper.client.models.generate_content.side_effect = [
             Exception("[WinError 10053] An established connection was aborted by the software in your host machine"),
