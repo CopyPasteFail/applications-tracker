@@ -5,6 +5,31 @@ from tracker import AIGrouper, TrackerError
 
 
 class GeminiFallbackTests(unittest.TestCase):
+    def test_init_passes_configured_api_version_to_gemini_client(self) -> None:
+        with patch("tracker.genai.Client") as client_factory:
+            AIGrouper({
+                "gemini": {
+                    "api_key": "test-key",
+                    "api_version": "v1beta",
+                    "models": ["gemini-3-flash-preview"],
+                }
+            })
+
+        client_factory.assert_called_once()
+        self.assertEqual(client_factory.call_args.kwargs["api_key"], "test-key")
+        self.assertEqual(client_factory.call_args.kwargs["http_options"].api_version, "v1beta")
+
+    def test_init_defaults_to_v1beta_api_version_for_json_mode(self) -> None:
+        with patch("tracker.genai.Client") as client_factory:
+            AIGrouper({
+                "gemini": {
+                    "api_key": "test-key",
+                    "models": ["gemini-3-flash-preview"],
+                }
+            })
+
+        self.assertEqual(client_factory.call_args.kwargs["http_options"].api_version, "v1beta")
+
     def test_generate_content_retries_same_model_after_transport_disconnect(self) -> None:
         grouper = AIGrouper.__new__(AIGrouper)
         grouper.model_names = ["gemini-3.1-flash-lite"]
@@ -95,6 +120,29 @@ class GeminiFallbackTests(unittest.TestCase):
 
         with self.assertRaises(TrackerError):
             grouper._generate_content("prompt", Mock())
+
+    def test_generate_content_falls_back_after_missing_model_404(self) -> None:
+        grouper = AIGrouper.__new__(AIGrouper)
+        grouper.model_names = ["gemini-unknown-model", "gemini-2.5-flash"]
+        grouper.client = Mock()
+        grouper.client.models.generate_content.side_effect = [
+            Exception(
+                "404 NOT_FOUND. {'error': {'code': 404, 'message': "
+                "'models/gemini-unknown-model is not found for API version v1, or is not "
+                "supported for generateContent.', 'status': 'NOT_FOUND'}}"
+            ),
+            "ok",
+        ]
+
+        with patch("tracker.console.print") as console_print:
+            response = grouper._generate_content("prompt", Mock())
+
+        self.assertEqual(response, "ok")
+        self.assertEqual(grouper.client.models.generate_content.call_count, 2)
+        printed_message = console_print.call_args.args[0]
+        self.assertIn("gemini-unknown-model", printed_message)
+        self.assertIn("gemini-2.5-flash", printed_message)
+        self.assertIn("not found", printed_message.lower())
 
 
 if __name__ == "__main__":

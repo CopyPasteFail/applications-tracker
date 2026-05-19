@@ -5422,7 +5422,11 @@ class AIGrouper:
         self.free_tier_grounded_model_names = self._build_free_tier_grounded_model_names(
             self.model_names
         )
-        self.client = genai.Client(api_key=api_key)
+        api_version = str(gcfg.get("api_version", "v1beta")).strip() or "v1beta"
+        self.client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(api_version=api_version),
+        )
         self.json_generation_config = types.GenerateContentConfig(
             response_mime_type="application/json",
             temperature=0.1,
@@ -5564,6 +5568,33 @@ class AIGrouper:
         )
         return has_503_signal and has_temporary_unavailable_signal
 
+    def _is_missing_model_error(self, error_text: str) -> bool:
+        """
+        Detect Gemini errors caused by a configured model name not existing.
+
+        Inputs:
+        - error_text: Raw exception text returned by the Gemini SDK.
+
+        Outputs:
+        - True when the provider says the requested model was not found or is unsupported.
+
+        Edge cases:
+        - Targets 404/not found wording so a bad model name falls through to the next
+          configured model instead of aborting the whole sync.
+
+        Atomicity / concurrency:
+        - Pure helper with no side effects.
+        """
+        normalized_error_text = error_text.lower()
+        return (
+            "404" in error_text
+            and (
+                "not found" in normalized_error_text
+                or "models/" in normalized_error_text
+                or "supported for generatecontent" in normalized_error_text
+            )
+        )
+
     def _is_transient_transport_disconnect(self, error_text: str) -> bool:
         """
         Detect transport-level disconnects before Gemini returns an HTTP response.
@@ -5600,6 +5631,8 @@ class AIGrouper:
         - Pure helper with no side effects.
         """
         normalized_error_text = error_text.lower()
+        if self._is_missing_model_error(error_text):
+            return "model not found or unsupported"
         if self._is_daily_quota_exhausted(error_text):
             return "daily quota exhausted"
         if self._is_transient_transport_disconnect(error_text):
@@ -5703,6 +5736,7 @@ class AIGrouper:
                         "429" in error_text
                         or "resource_exhausted" in normalized_error_text
                         or self._is_transient_model_unavailable(error_text)
+                        or self._is_missing_model_error(error_text)
                     ):
                         last_rate_limit_error = GeminiRateLimitError(
                             message=f"Gemini request failed for model {model_name}: {error}",
