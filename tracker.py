@@ -19,7 +19,7 @@ Usage:
   python tracker.py --resume-run ID   # resume a saved AI grouping run after a fail-closed abort
 """
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 import json
 import uuid
@@ -2564,6 +2564,15 @@ def extract_scheduled_interview_date_from_email_message(email_message: GmailMess
     if iso_date_match:
         return iso_date_match.group(1)
 
+    ics_dtstart_match = re.search(
+        r"\bDTSTART(?:;[^:\r\n]*)?:(20\d{2})(\d{2})(\d{2})(?:T\d{6}Z?)?\b",
+        normalized_message_text,
+        flags=re.IGNORECASE,
+    )
+    if ics_dtstart_match:
+        year, month, day = ics_dtstart_match.groups()
+        return f"{year}-{month}-{day}"
+
     sent_date = parse_iso_date(extract_sent_date_from_email_message(email_message))
     anchor_date = sent_date.date() if sent_date is not None else datetime.now(timezone.utc).date()
     month_name_pattern = (
@@ -4035,8 +4044,16 @@ class GmailClient:
             attachment_id = str(body.get("attachmentId", "") or "").strip()
             inline_data = str(body.get("data", "") or "")
             is_pdf_attachment = mime == "application/pdf" or filename.endswith(".pdf")
+            is_calendar_attachment = (
+                mime in {"text/calendar", "application/ics"}
+                or filename.endswith(".ics")
+            )
 
-            if mime not in {"application/pdf", "text/plain", "text/html"} and not filename.endswith(".pdf"):
+            if (
+                mime not in {"application/pdf", "text/plain", "text/html"}
+                and not filename.endswith(".pdf")
+                and not is_calendar_attachment
+            ):
                 continue
 
             attachment_bytes = b""
@@ -4071,6 +4088,8 @@ class GmailClient:
                 elif mime == "text/html":
                     html_text = attachment_bytes.decode("utf-8", errors="replace")
                     extracted_text_chunks.append(re.sub(r"<[^>]+>", " ", html_text))
+                elif is_calendar_attachment:
+                    extracted_text_chunks.append(attachment_bytes.decode("utf-8", errors="replace"))
             except Exception as error:
                 if is_pdf_attachment:
                     self._log_pdf_attachment_issue(message_id, raw_filename, error)

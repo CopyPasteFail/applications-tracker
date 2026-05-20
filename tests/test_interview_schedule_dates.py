@@ -27,6 +27,29 @@ class InterviewScheduleDateExtractionTests(unittest.TestCase):
             "2026-03-31",
         )
 
+    def test_extracts_compact_ics_dtstart_from_calendar_attachment_text(self) -> None:
+        email_message = {
+            "subject": "Omer Reznik and Yousaf, Adnan",
+            "snippet": "Event Name Webex Video interview with Adnan Yousaf",
+            "body": "Event Name\nWebex Video interview with Adnan Yousaf",
+            "attachment_text": (
+                "BEGIN:VCALENDAR\r\n"
+                "BEGIN:VEVENT\r\n"
+                "SUMMARY:Omer Reznik and Yousaf\\, Adnan\r\n"
+                "DTSTART;TZID=W. Europe Standard Time:20260601T150000\r\n"
+                "DTEND;TZID=W. Europe Standard Time:20260601T153000\r\n"
+                "END:VEVENT\r\n"
+                "END:VCALENDAR\r\n"
+            ),
+            "date": "Wed, 20 May 2026 15:07:58 +0000",
+            "timestamp": 1779289678,
+        }
+
+        self.assertEqual(
+            extract_scheduled_interview_date_from_email_message(email_message),
+            "2026-06-01",
+        )
+
     def test_detects_cancellation_as_schedule_signal(self) -> None:
         email_message = {
             "subject": "Updated invitation: Interview with Solactive AG",
