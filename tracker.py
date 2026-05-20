@@ -19,7 +19,7 @@ Usage:
   python tracker.py --resume-run ID   # resume a saved AI grouping run after a fail-closed abort
 """
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 import json
 import uuid
@@ -1588,6 +1588,9 @@ def is_unusable_outbound_email(email_address: str) -> bool:
     """
     normalized_email_address = extract_email_address(email_address).strip().lower()
     if "@" not in normalized_email_address:
+        return True
+
+    if normalized_email_address == "notify@mail.notion.so":
         return True
 
     if is_company_scoped_comeet_reply_address(normalized_email_address):

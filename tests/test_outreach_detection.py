@@ -166,6 +166,9 @@ class OutreachDetectionTests(unittest.TestCase):
         self.assertTrue(is_unusable_outbound_email("no-reply@screenloop.com"))
         self.assertTrue(is_unusable_outbound_email("no-reply@us.greenhouse-mail.io"))
 
+    def test_notion_notification_mailbox_is_unusable(self) -> None:
+        self.assertTrue(is_unusable_outbound_email("notify@mail.notion.so"))
+
     def test_extract_email_addresses_from_text_returns_all_addresses(self) -> None:
         self.assertEqual(
             extract_email_addresses_from_text(
