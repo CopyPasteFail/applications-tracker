@@ -124,7 +124,7 @@ SCOPES = [
 # Known ATS email domains — used to identify automated vs human senders
 ATS_DOMAINS = {
     "greenhouse.io", "greenhouse-mail.io", "lever.co", "workday.com",
-    "myworkdayjobs.com", "icims.com", "jobvite.com", "bamboohr.com",
+    "myworkday.com", "myworkdayjobs.com", "icims.com", "jobvite.com", "bamboohr.com",
     "smartrecruiters.com", "taleo.net", "successfactors.com", "ashbyhq.com",
     "rippling.com", "comeet.co", "recruitee.com", "workable.com",
     "breezy.hr", "jazz.co", "jazzhr.com", "pinpointhq.com", "teamtailor.com",

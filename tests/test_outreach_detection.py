@@ -311,6 +311,21 @@ class OutreachDetectionTests(unittest.TestCase):
         self.assertNotIn("from:privacy@cyberreact.example", search_terms)
         self.assertNotIn("from:cyberreact.example", search_terms)
 
+    def test_related_search_terms_do_not_emit_broad_myworkday_domain(self) -> None:
+        search_terms = build_related_gmail_search_terms(
+            {
+                "company": "NVIDIA",
+                "recruiter_email": "",
+                "ats_email": "nvidia@myworkday.com",
+                "contact_email": "nforkosh@nvidia.com",
+            }
+        )
+
+        self.assertIn('"NVIDIA"', search_terms)
+        self.assertIn("from:nvidia@myworkday.com", search_terms)
+        self.assertIn("from:nforkosh@nvidia.com", search_terms)
+        self.assertIn("from:nvidia.com", search_terms)
+        self.assertNotIn("from:myworkday.com", search_terms)
     def test_extract_first_json_object_handles_fenced_json(self) -> None:
         self.assertEqual(
             extract_first_json_object(
