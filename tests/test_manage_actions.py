@@ -680,6 +680,18 @@ class ManageActionTests(unittest.TestCase):
             self.assertEqual(pending[0]["appl_id"], "WUR-AIP-21")
             self.assertEqual(pending[0]["draft_id"], "draft-1")
 
+    def test_confirm_email_value_reprompts_for_address_without_domain_suffix(self) -> None:
+        tracker = Tracker.__new__(Tracker)
+
+        with patch("tracker.console.print"), patch(
+            "tracker.Prompt.ask",
+            side_effect=["privacy@example.com", "y"],
+        ) as mock_prompt:
+            confirmed_email = tracker._confirm_email_value("sie-privacy@sony")
+
+        self.assertEqual(confirmed_email, "privacy@example.com")
+        self.assertEqual(mock_prompt.call_count, 2)
+
     def test_digest_mixed_actions_persist_only_automatic_pending_records(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             pending_path = Path(temp_dir) / "pending_actions.json"

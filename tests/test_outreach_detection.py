@@ -169,6 +169,13 @@ class OutreachDetectionTests(unittest.TestCase):
     def test_notion_notification_mailbox_is_unusable(self) -> None:
         self.assertTrue(is_unusable_outbound_email("notify@mail.notion.so"))
 
+    def test_email_without_domain_suffix_is_unusable(self) -> None:
+        self.assertTrue(is_unusable_outbound_email("sie-privacy@sony"))
+        self.assertEqual(
+            choose_best_contact_email_for_action(["sie-privacy@sony"], "withdraw"),
+            "",
+        )
+
     def test_extract_email_addresses_from_text_returns_all_addresses(self) -> None:
         self.assertEqual(
             extract_email_addresses_from_text(

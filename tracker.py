@@ -19,7 +19,7 @@ Usage:
   python tracker.py --resume-run ID   # resume a saved AI grouping run after a fail-closed abort
 """
 
-__version__ = "0.3.4"
+__version__ = "0.3.5"
 
 import json
 import uuid
@@ -98,6 +98,17 @@ STATE_DIR      = BASE_DIR / "state"
 PROCESSED_GMAIL_STATE_PATH = STATE_DIR / "processed_gmail_message_ids.json"
 TEMPLATES_DIR  = BASE_DIR / "templates"
 GROUPING_RUNS_DIR = STATE_DIR / "grouping_runs"
+
+EMAIL_ADDRESS_PATTERN_TEXT = r"[A-Z0-9._%+\-]+@(?:[A-Z0-9](?:[A-Z0-9\-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,63}"
+EMAIL_ADDRESS_PATTERN = re.compile(
+    rf"^{EMAIL_ADDRESS_PATTERN_TEXT}$",
+    flags=re.IGNORECASE,
+)
+EMAIL_ADDRESS_IN_TEXT_PATTERN = re.compile(
+    rf"\b{EMAIL_ADDRESS_PATTERN_TEXT}\b",
+    flags=re.IGNORECASE,
+)
+
 
 def _resolve_template(config: ConfigDict, key: str) -> Path:
     """Resolve a template path from config, falling back to the default location."""
@@ -997,7 +1008,10 @@ def extract_email_address(raw_email_header: str) -> str:
     - Pure helper with no shared mutable state.
     """
     _, parsed_email_address = parseaddr(str(raw_email_header or "").strip())
-    return parsed_email_address.strip().lower()
+    normalized_email_address = parsed_email_address.strip().lower()
+    if not EMAIL_ADDRESS_PATTERN.fullmatch(normalized_email_address):
+        return ""
+    return normalized_email_address
 
 
 def extract_email_addresses_from_text(raw_text: str) -> list[str]:
@@ -1018,11 +1032,7 @@ def extract_email_addresses_from_text(raw_text: str) -> list[str]:
     - Pure helper with no shared mutable state.
     """
     extracted_email_addresses: list[str] = []
-    for match in re.finditer(
-        r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b",
-        str(raw_text or ""),
-        flags=re.IGNORECASE,
-    ):
+    for match in EMAIL_ADDRESS_IN_TEXT_PATTERN.finditer(str(raw_text or "")):
         email_address = match.group(0).strip(" \t\r\n<>\"'`.,;:()[]{}").lower()
         if email_address and email_address not in extracted_email_addresses:
             extracted_email_addresses.append(email_address)
@@ -8451,7 +8461,12 @@ class Tracker:
     def _confirm_email_value(self, initial_email: str) -> str:
         candidate_email = initial_email.strip().lower()
         while True:
-            if "@" not in candidate_email:
+            if not extract_email_address(candidate_email):
+                if candidate_email:
+                    console.print(
+                        "[red]  Enter a valid email address with a full domain, "
+                        "for example privacy@example.com.[/red]"
+                    )
                 candidate_email = Prompt.ask("  Email address").strip().lower()
                 continue
 
@@ -10260,7 +10275,8 @@ class Tracker:
                 subj, body = self.ai.generate_follow_up(app, user_name, fu_n)
 
             draft_id = ""
-            if not (target and "@" in target):
+            normalized_target_email = extract_email_address(str(target or ""))
+            if not normalized_target_email:
                 target, requested_manual_draft, should_skip_action = self._resolve_missing_email_action(
                     app=app,
                     action_type=atype,
@@ -10269,8 +10285,10 @@ class Tracker:
                     console.print(f"  [yellow]Skipping {app.get('company', '')} — {atype}[/yellow]")
                     continue
                 should_create_manual_draft = requested_manual_draft
+                normalized_target_email = extract_email_address(str(target or ""))
 
-            if target and "@" in target:
+            if normalized_target_email:
+                target = normalized_target_email
                 try:
                     draft_id = self.gmail.create_draft(
                         target, subj, body,
